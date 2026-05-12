@@ -5,8 +5,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from raspise.api.auth import hash_password, verify_password, create_access_token
-from raspise.db.models import AdminUser
+from naco.api.auth import hash_password, verify_password, create_access_token
+from naco.db.models import AdminUser
 
 
 # ---------------------------------------------------------------------------

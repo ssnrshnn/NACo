@@ -13,6 +13,8 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 .venv/
@@ -26,11 +28,16 @@ env/
 *~
 
 # Project runtime / secrets
+.env
+.env.local
 config/config.local.yaml
 *.db
 *.sqlite3
 *.log
 logs/
+
+# Docker volumes mounted locally
+deploy/data/
 
 # OS
 .DS_Store

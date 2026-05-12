@@ -1,0 +1,49 @@
+# rlm_rest module — delegates authn/authz/accounting to NACo.
+#
+# All three endpoints live at /api/v1/eap/* on the NACo container. We pin
+# the bearer token via the NACO_EAP_TOKEN env var (see docker-compose.eap.yml).
+
+rest {
+    connect_uri        = "${NACO_EAP_URL}"
+    connect_timeout    = 5.0
+
+    authorize {
+        uri            = "${..connect_uri}/authorize"
+        method         = post
+        body           = json
+        data           = '{"username":"%{User-Name}","nas_ip":"%{NAS-IP-Address}","calling_station_id":"%{Calling-Station-Id}"}'
+        tls = {}
+    }
+
+    authenticate {
+        uri            = "${..connect_uri}/auth"
+        method         = post
+        body           = json
+        data           = '{"username":"%{User-Name}","password":"%{User-Password}","nas_ip":"%{NAS-IP-Address}","calling_station_id":"%{Calling-Station-Id}"}'
+        tls = {}
+    }
+
+    accounting {
+        uri            = "${..connect_uri}/accounting"
+        method         = post
+        body           = json
+        data           = '{"status_type":"%{Acct-Status-Type}","username":"%{User-Name}","session_id":"%{Acct-Session-Id}","nas_ip":"%{NAS-IP-Address}","framed_ip":"%{Framed-IP-Address}","calling_station":"%{Calling-Station-Id}","input_octets":"%{Acct-Input-Octets}","output_octets":"%{Acct-Output-Octets}","session_time":"%{Acct-Session-Time}"}'
+        tls = {}
+    }
+
+    pool {
+        start          = 4
+        min            = 2
+        max            = 16
+        spare          = 4
+        uses           = 0
+        retry_delay    = 30
+        lifetime       = 86400
+        idle_timeout   = 600
+    }
+
+    # Pre-shared bearer token — sent on every request.
+    headers {
+        Authorization = "Bearer ${NACO_EAP_TOKEN}"
+    }
+}

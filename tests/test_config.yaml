@@ -1,29 +1,41 @@
-# Minimal config for test suite — in-memory DB, all services disabled.
+# Minimal config for the pytest suite — in-memory SQLite, services disabled.
 server:
-  name: "RaspISE-Test"
-  secret_key: "test-secret-key-not-for-production"
+  name: "NACo-Test"
+  host: "127.0.0.1"
+  port: 0
+  session_secret: "test-session-secret-not-for-production"
+  api_secret:     "test-api-secret-not-for-production"
+  csrf_secret:    "test-csrf-secret-not-for-production"
+  admin_username: "admin"
+  admin_password: "Admin1234"
+  token_expire_minutes: 60
   debug: false
   log_level: "WARNING"
   log_file: "/dev/null"
+  trusted_proxies:
+    - "127.0.0.1/32"
 
 database:
   url: "sqlite+aiosqlite://"
 
+cache:
+  url: ""
+
 radius:
   enabled: false
+  auth_port: 11812
+  acct_port: 11813
+  coa_port:  13799
+  require_message_authenticator: true
+  clients:
+    - name: "test-nas"
+      address: "127.0.0.1"
+      secret:  "testing123"
+      require_message_authenticator: true
 
 tacacs:
   enabled: false
   key: "testkey"
-
-web:
-  port: 8080
-  admin_username: "admin"
-  admin_password: "Admin1234"
-
-api:
-  port: 8081
-  token_expire_minutes: 60
 
 portal:
   enabled: false
@@ -31,6 +43,6 @@ portal:
 profiler:
   enabled: false
 
-display:
-  enabled: false
-  driver: "simulation"
+eap:
+  enabled: true
+  bearer_token: "test-eap-bearer-token-not-for-production"

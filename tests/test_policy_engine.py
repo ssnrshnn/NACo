@@ -1,4 +1,4 @@
-"""Tests for raspise.policy.engine — condition evaluators and engine logic."""
+"""Tests for naco.policy.engine — condition evaluators and engine logic."""
 from __future__ import annotations
 
 import json
@@ -8,8 +8,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from raspise.db.models import Group, Policy, PolicyAction
-from raspise.policy.engine import (
+from naco.db.models import Group, Policy, PolicyAction
+from naco.policy.engine import (
     AuthContext,
     PolicyDecision,
     PolicyEngine,

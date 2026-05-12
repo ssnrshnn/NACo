@@ -1,7 +1,7 @@
-"""Alembic environment configuration for RaspISE.
+"""Alembic environment configuration for NACo.
 
-Uses the async engine from raspise.db.database so the DB URL always comes
-from config.yaml / RASPISE_CONFIG rather than alembic.ini.
+Uses the async engine from naco.db.database so the DB URL always comes
+from config.yaml / NACO_CONFIG rather than alembic.ini.
 """
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from raspise.config import get_config
-from raspise.db.database import Base
+from naco.config import get_config
+from naco.db.database import Base
 
 # Import all models so Base.metadata is populated
-import raspise.db.models  # noqa: F401
+import naco.db.models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
@@ -26,9 +26,17 @@ target_metadata = Base.metadata
 
 
 def _sync_url() -> str:
-    """Convert the async DB URL to a synchronous one for Alembic."""
+    """Convert the async DB URL to a synchronous one for Alembic.
+
+    Translates ``+asyncpg`` → vanilla ``postgresql`` and ``+aiosqlite`` →
+    plain ``sqlite``. Falls back to the raw value for any other backend.
+    """
     url = get_config().database.url
-    return url.replace("+aiosqlite", "")
+    return (
+        url
+        .replace("postgresql+asyncpg", "postgresql")
+        .replace("sqlite+aiosqlite", "sqlite")
+    )
 
 
 def run_migrations_offline() -> None:

@@ -1,0 +1,117 @@
+# NACo — base stack: naco app + postgres + redis + caddy
+#
+# Default profile brings up the four core services. Layer optional profiles by
+# passing more compose files on the command line:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.eap.yml \
+#                    -f docker-compose.obs.yml up -d
+#
+# Most config comes from `.env`. Copy `.env.example` and edit before launch.
+
+name: naco
+
+x-default-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${NACO_DB_USER:-naco}
+      POSTGRES_PASSWORD: ${NACO_DB_PASSWORD:?NACO_DB_PASSWORD is required}
+      POSTGRES_DB:       ${NACO_DB_NAME:-naco}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - naco_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NACO_DB_USER:-naco} -d ${NACO_DB_NAME:-naco}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default_logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - naco_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *default_logging
+
+  naco:
+    image: ${NACO_IMAGE:-ghcr.io/your-org/naco:2.0.0}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    # host networking lets the RADIUS source IP, CoA target IP, and the
+    # Scapy-based profiler "see" the real network. The HTTP listener is still
+    # exposed only on the configured host:port — Caddy is the public ingress.
+    network_mode: host
+    cap_add:
+      - NET_RAW       # required by the Scapy DHCP/ARP profiler
+      - NET_ADMIN
+    environment:
+      NACO_CONFIG:          /etc/naco/config.yaml
+      NACO_DB_URL:          postgresql+asyncpg://${NACO_DB_USER:-naco}:${NACO_DB_PASSWORD}@127.0.0.1:5432/${NACO_DB_NAME:-naco}
+      NACO_REDIS_URL:       redis://127.0.0.1:6379/0
+      NACO_SESSION_SECRET:  ${NACO_SESSION_SECRET:?NACO_SESSION_SECRET is required}
+      NACO_API_SECRET:      ${NACO_API_SECRET:?NACO_API_SECRET is required}
+      NACO_CSRF_SECRET:     ${NACO_CSRF_SECRET:?NACO_CSRF_SECRET is required}
+      NACO_ADMIN_PASSWORD:  ${NACO_ADMIN_PASSWORD:?NACO_ADMIN_PASSWORD is required}
+      NACO_HOST:            0.0.0.0
+      NACO_PORT:            "8080"
+    volumes:
+      - ../config:/etc/naco:ro
+      - naco_data:/var/lib/naco
+    healthcheck:
+      test: ["CMD", "python", "-c",
+        "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default_logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      naco: { condition: service_started }
+    network_mode: host
+    environment:
+      NACO_DOMAIN:      ${NACO_DOMAIN:-localhost}
+      NACO_UPSTREAM:    127.0.0.1:8080
+      NACO_TLS_EMAIL:   ${NACO_TLS_EMAIL:-admin@example.com}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging: *default_logging
+
+networks:
+  naco_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  naco_data:

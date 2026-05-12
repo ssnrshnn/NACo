@@ -1,4 +1,4 @@
-"""Tests for raspise.core.utils."""
+"""Tests for naco.core.utils."""
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +6,7 @@ from datetime import time
 
 import pytest
 
-from raspise.core.utils import (
+from naco.core.utils import (
     chap_verify,
     constant_time_compare,
     generate_password,

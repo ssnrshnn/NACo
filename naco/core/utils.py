@@ -1,0 +1,132 @@
+"""Misc utility functions shared across NACo modules."""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import secrets
+import string
+from datetime import datetime, time, timezone
+
+
+# ---------------------------------------------------------------------------
+# MAC address helpers
+# ---------------------------------------------------------------------------
+
+def normalise_mac(mac: str) -> str:
+    """Return MAC in lower-colon format: aa:bb:cc:dd:ee:ff"""
+    raw = re.sub(r"[^0-9a-fA-F]", "", mac)
+    if len(raw) != 12:
+        raise ValueError(f"Invalid MAC address: {mac!r}")
+    return ":".join(raw[i:i+2].lower() for i in range(0, 12, 2))
+
+
+def mac_oui(mac: str) -> str:
+    """Return the 6-char OUI prefix (lower, no separator)."""
+    return normalise_mac(mac).replace(":", "")[:6]
+
+
+# ---------------------------------------------------------------------------
+# Password helpers
+# ---------------------------------------------------------------------------
+
+def generate_password(length: int = 16) -> str:
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def constant_time_compare(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
+# ---------------------------------------------------------------------------
+# Token helpers
+# ---------------------------------------------------------------------------
+
+def generate_token(nbytes: int = 32) -> str:
+    return secrets.token_urlsafe(nbytes)
+
+
+# ---------------------------------------------------------------------------
+# Time helpers
+# ---------------------------------------------------------------------------
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def is_within_time_range(start: str, end: str, now: time | None = None) -> bool:
+    """Return True if current time is within [HH:MM, HH:MM] range."""
+    if now is None:
+        now = datetime.now().time()
+    t_start = time.fromisoformat(start)
+    t_end   = time.fromisoformat(end)
+    if t_start <= t_end:
+        return t_start <= now <= t_end
+    # Overnight range (e.g. 22:00 – 06:00)
+    return now >= t_start or now <= t_end
+
+
+# ---------------------------------------------------------------------------
+# Reverse-proxy helpers
+# ---------------------------------------------------------------------------
+
+def client_ip(request) -> str:  # type: ignore[no-untyped-def]
+    """Return the real client IP, trusting only configured upstream proxies.
+
+    Caddy and most reverse proxies append each upstream hop to
+    ``X-Forwarded-For`` so the header reads
+    ``<client>, <proxy1>, <proxy2>``. We start from the right and skip any
+    hop listed in ``cfg.server.trusted_proxies``; the first non-trusted hop
+    is the real client. If no header is set we fall back to
+    ``request.client.host`` (and finally ``"unknown"``).
+    """
+    from naco.config import get_config
+
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        trusted = set(get_config().server.trusted_proxies or [])
+        hops = [h.strip() for h in fwd.split(",") if h.strip()]
+        for hop in reversed(hops):
+            if hop and hop not in trusted:
+                return hop
+        if hops:
+            return hops[0]
+    real = request.headers.get("x-real-ip", "").strip()
+    if real:
+        return real
+    return request.client.host if request.client else "unknown"
+
+
+def _peer_ip_is_trusted(request) -> bool:  # type: ignore[no-untyped-def]
+    """Return True if the *immediate* peer is in ``server.trusted_proxies``.
+
+    Used by :mod:`naco.core.request_id` to decide whether to honour an
+    upstream-set ``X-Request-ID``: only trust the header when the connection
+    actually came from one of the configured proxies, otherwise an attacker
+    could inject arbitrary correlation IDs to confuse log analysis.
+    """
+    from naco.config import get_config
+
+    if request.client is None:
+        return False
+    trusted = set(get_config().server.trusted_proxies or [])
+    return request.client.host in trusted
+
+
+# ---------------------------------------------------------------------------
+# CHAP helpers
+# ---------------------------------------------------------------------------
+
+def chap_verify(identifier: bytes, password: str, chap_response: bytes) -> bool:
+    """Verify CHAP-Password (RFC 1994, MD5 based).
+
+    *chap_response* must be ``chap_resp (16 bytes) + challenge`` so that
+    ``chap_response[:16]`` is the peer's response and ``chap_response[16:]``
+    is the challenge used in the hash: MD5(id || secret || challenge).
+    """
+    if len(chap_response) < 17:
+        return False  # need at least 16-byte response + 1-byte challenge
+    challenge = chap_response[16:]
+    expected  = hashlib.md5(identifier + password.encode() + challenge).digest()
+    return hmac.compare_digest(expected, chap_response[:16])

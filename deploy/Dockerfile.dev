@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+# Development image — adds editable install, hot reload, ruff, mypy, pytest.
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    NACO_CONFIG=/etc/naco/config.yaml
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential libffi-dev libssl-dev libpq-dev libpcap0.8 \
+      postgresql-client tini ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --upgrade pip wheel \
+ && pip install -r requirements.txt \
+ && pip install ruff mypy pytest pytest-asyncio pytest-cov
+
+COPY . .
+RUN pip install -e .
+
+RUN mkdir -p /etc/naco /var/lib/naco /var/log/naco
+
+EXPOSE 8080/tcp 1812/udp 1813/udp 3799/udp 49/tcp
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["uvicorn", "naco.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]

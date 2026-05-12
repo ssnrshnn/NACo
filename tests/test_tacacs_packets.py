@@ -5,7 +5,7 @@ import struct
 
 import pytest
 
-from raspise.tacacs.server import (
+from naco.tacacs.server import (
     HEADER_LEN,
     TAC_PLUS_AUTHEN,
     TAC_PLUS_UNENCRYPTED_FLAG,

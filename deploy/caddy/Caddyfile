@@ -1,0 +1,42 @@
+# NACo reverse proxy
+#
+# Environment substitution is performed by `caddy` at startup, so the same
+# Caddyfile works in dev (NACO_DOMAIN=localhost, no TLS) and in production
+# (real hostname → automatic Let's Encrypt).
+
+{
+    email {$NACO_TLS_EMAIL}
+    admin off
+    # In dev, set ACME_CA=internal to avoid hitting Let's Encrypt.
+    {$ACME_CA_DIRECTIVE}
+}
+
+# Match the public hostname. Caddy auto-provisions TLS via ACME for real
+# domains; for `localhost` it falls back to its self-signed local CA.
+{$NACO_DOMAIN} {
+    # Send X-Forwarded-* so NACo can correctly attribute the originating IP
+    # for rate limiting and admin audit logs.
+    encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+        # Hide Caddy's banner.
+        -Server
+    }
+
+    # Captive portal: leave HTTPS-redirect off so guest devices can reach it
+    # over plain HTTP from the iptables redirect.
+    @portal path /portal /portal/*
+    reverse_proxy @portal {$NACO_UPSTREAM} {
+        header_up X-Real-IP {remote_host}
+    }
+
+    # Everything else (admin UI + REST API) is HTTPS only.
+    reverse_proxy {$NACO_UPSTREAM} {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

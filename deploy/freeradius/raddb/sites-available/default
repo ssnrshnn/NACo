@@ -1,0 +1,45 @@
+# Minimal "default" virtual server — routes EAP outer auth to rlm_rest → NACo.
+
+server default {
+    listen {
+        type     = auth
+        ipaddr   = *
+        port     = 1812
+    }
+    listen {
+        type     = acct
+        ipaddr   = *
+        port     = 1813
+    }
+
+    authorize {
+        rest
+        if (ok) {
+            update control {
+                Auth-Type := rest
+            }
+        }
+    }
+
+    authenticate {
+        Auth-Type rest {
+            rest
+        }
+        eap
+    }
+
+    preacct {
+        preprocess
+        acct_unique
+    }
+
+    accounting {
+        rest
+    }
+
+    post-auth {
+        Post-Auth-Type REJECT {
+            attr_filter.access_reject
+        }
+    }
+}

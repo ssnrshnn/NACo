@@ -1,34 +1,21 @@
-"""Shared test fixtures for RaspISE."""
+"""Shared test fixtures for NACo."""
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import AsyncGenerator
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-# Point config at a minimal in-memory YAML before any raspise imports
-os.environ["RASPISE_CONFIG"] = os.path.join(os.path.dirname(__file__), "test_config.yaml")
+# Point config at a minimal in-memory YAML before any naco imports
+os.environ["NACO_CONFIG"] = os.path.join(os.path.dirname(__file__), "test_config.yaml")
 
-from raspise.db.database import Base
-from raspise.db import get_db
-from raspise.api import create_api_app
-from raspise.api.auth import hash_password
-from raspise.db.models import AdminUser
-
-
-# ---------------------------------------------------------------------------
-# Async event-loop fixture (session-scoped so the engine lives across tests)
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+from naco.db.database import Base
+from naco.db import get_db
+from naco.api import create_api_app
+from naco.api.auth import hash_password
+from naco.db.models import AdminUser
 
 
 # ---------------------------------------------------------------------------
@@ -83,11 +70,14 @@ async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
 @pytest_asyncio.fixture
 async def admin_user(db: AsyncSession) -> AdminUser:
+    from naco.db.models import AdminRole
+
     user = AdminUser(
         username="testadmin",
         password_hash=hash_password("Admin1234"),
         email="admin@test.local",
         is_superuser=True,
+        role=AdminRole.SUPERUSER,
         enabled=True,
     )
     db.add(user)
