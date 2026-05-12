@@ -1,12 +1,17 @@
 """Phase 0.4 — PostgreSQL CLI must not put the DB password on the command line."""
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from naco.cli import postgresql_cli_env_and_argv
 
 
 def test_password_only_in_pgpassword_env():
+    # Password contains reserved URL characters — they must be percent-encoded
+    # in the DSN or the first ``@`` is treated as end of ``user:password``.
     secret = "hunter2!@#"
-    url = f"postgresql+asyncpg://nacouser:{secret}@db.example.com:5433/mydb"
+    enc = quote(secret, safe="")
+    url = f"postgresql+asyncpg://nacouser:{enc}@db.example.com:5433/mydb"
     env, argv = postgresql_cli_env_and_argv(url)
 
     assert env.get("PGPASSWORD") == secret
