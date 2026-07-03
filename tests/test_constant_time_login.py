@@ -17,11 +17,11 @@ in the same process so noise cancels.
 from __future__ import annotations
 
 import time
+
 import pytest
 from httpx import AsyncClient
 
 from naco.api.auth import dummy_verify, hash_password, verify_password
-
 
 # ---------------------------------------------------------------------------
 # Direct unit test: dummy_verify exists, returns False, and is non-trivial.

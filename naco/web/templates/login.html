@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NACo — Login</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
   <style>
     body {
@@ -20,23 +22,20 @@
       backdrop-filter: blur(10px);
     }
     .brand-icon {
-      width: 56px; height: 56px;
-      background: rgba(13, 202, 240, 0.12);
-      border: 1px solid rgba(13, 202, 240, 0.3);
-      border-radius: 14px;
+      width: 72px; height: 72px;
+      border-radius: 16px;
       display: flex; align-items: center; justify-content: center;
       margin: 0 auto 20px;
+      overflow: hidden;
+      box-shadow: 0 0 24px rgba(13, 202, 240, 0.25);
     }
+    .brand-icon img { width: 100%; height: 100%; object-fit: cover; }
   </style>
 </head>
 <body>
   <div class="login-card">
     <div class="brand-icon">
-      <svg width="30" height="30" viewBox="0 0 52 52" fill="none">
-        <circle cx="26" cy="26" r="25" stroke="#0dcaf0" stroke-width="2"/>
-        <path d="M14 26 Q26 10 38 26 Q26 42 14 26Z" fill="none" stroke="#0dcaf0" stroke-width="1.8"/>
-        <circle cx="26" cy="26" r="4" fill="#0dcaf0"/>
-      </svg>
+      <img src="/static/img/logo-128.png" alt="NACo logo">
     </div>
     <h4 class="text-center fw-bold mb-1">NACo</h4>
     <p class="text-center text-muted small mb-4">Admin Console</p>
@@ -69,7 +68,7 @@
     </form>
 
     <p class="text-center text-muted mt-3" style="font-size:.75rem">
-      Network Access Control · NACo v1.0
+      Network Access Control · NACo v2
     </p>
   </div>
 

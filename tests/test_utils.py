@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import time
+from datetime import UTC, time
 
 import pytest
 
@@ -16,7 +16,6 @@ from naco.core.utils import (
     normalise_mac,
     utcnow,
 )
-
 
 # ---------------------------------------------------------------------------
 # normalise_mac
@@ -124,9 +123,8 @@ class TestUtcnow:
         assert now.tzinfo is not None
 
     def test_utc_offset_zero(self):
-        from datetime import timezone
         now = utcnow()
-        assert now.utcoffset() == timezone.utc.utcoffset(None)
+        assert now.utcoffset() == UTC.utcoffset(None)
 
 
 # ---------------------------------------------------------------------------

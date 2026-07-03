@@ -1,10 +1,6 @@
 """Tests for TACACS+ packet encode/decode and encryption primitives."""
 from __future__ import annotations
 
-import struct
-
-import pytest
-
 from naco.tacacs.server import (
     HEADER_LEN,
     TAC_PLUS_AUTHEN,
@@ -16,7 +12,6 @@ from naco.tacacs.server import (
     _md5_pad,
     _parse_av_pairs,
 )
-
 
 # ---------------------------------------------------------------------------
 # TacacsHeader encode / decode round-trip

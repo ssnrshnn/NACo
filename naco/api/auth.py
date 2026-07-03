@@ -24,7 +24,7 @@ See :class:`naco.db.models.AdminRole` for the rank ordering.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
@@ -53,6 +53,25 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+async def verify_password_async(plain: str, hashed: str) -> bool:
+    """Thread-offloaded :func:`verify_password`.
+
+    bcrypt at cost 13 burns 300–500 ms of CPU. Async request handlers and the
+    RADIUS/TACACS+ coroutines all share one event loop — verifying inline
+    would freeze every other connection for the duration, and caps
+    authentication throughput at ~2–3/s. Always use this variant from
+    ``async def`` code.
+    """
+    import asyncio
+    return await asyncio.to_thread(verify_password, plain, hashed)
+
+
+async def dummy_verify_async(password: str = "") -> bool:
+    """Thread-offloaded :func:`dummy_verify` — see :func:`verify_password_async`."""
+    import asyncio
+    return await asyncio.to_thread(dummy_verify, password)
 
 
 def needs_rehash(hashed: str, target_cost: int = _BCRYPT_ROUNDS) -> bool:
@@ -129,8 +148,8 @@ def create_access_token(subject: str, expire_minutes: int | None = None) -> str:
     """Issue a Bearer JWT signed with the API secret."""
     cfg = get_config()
     minutes = expire_minutes or cfg.server.token_expire_minutes
-    expire  = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-    payload = {"sub": subject, "exp": expire, "iat": datetime.now(timezone.utc), "kind": "api"}
+    expire  = datetime.now(UTC) + timedelta(minutes=minutes)
+    payload = {"sub": subject, "exp": expire, "iat": datetime.now(UTC), "kind": "api"}
     return jwt.encode(payload, cfg.server.api_secret, algorithm=_ALGORITHM)
 
 
@@ -175,7 +194,7 @@ async def get_current_admin(
     if not username:
         raise credentials_exception
 
-    stmt = select(AdminUser).where(AdminUser.username == username, AdminUser.enabled == True)
+    stmt = select(AdminUser).where(AdminUser.username == username, AdminUser.enabled)
     user = (await db.execute(stmt)).scalar_one_or_none()
     if user is None:
         raise credentials_exception

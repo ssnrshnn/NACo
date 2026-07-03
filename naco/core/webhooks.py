@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 
 from naco.config import get_config
-from naco.core.events import Event, EventType, bus
+from naco.core.events import Event, bus
 from naco.core.logger import get_logger
 
 log = get_logger(__name__)

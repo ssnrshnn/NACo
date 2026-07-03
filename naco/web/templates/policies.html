@@ -14,7 +14,7 @@
   <div class="table-responsive">
     <table class="table table-hover mb-0 small align-middle">
       <thead class="table-secondary">
-        <tr><th>#</th><th>Name</th><th>Conditions</th><th>Action</th><th>VLAN</th><th>Status</th><th></th></tr>
+        <tr><th>#</th><th>Name</th><th>Conditions</th><th>Action</th><th>VLAN</th><th>Reply Attributes</th><th>Status</th><th></th></tr>
       </thead>
       <tbody>
         {% for p in policies %}
@@ -42,6 +42,14 @@
           </td>
           <td>{{ p.vlan or '—' }}</td>
           <td>
+            {% set rattrs = p.reply_attributes | from_json if p.reply_attributes else {} %}
+            {% for k, v in rattrs.items() %}
+              <span class="badge bg-dark border border-secondary me-1 small" title="{{ v }}">{{ k }}</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endfor %}
+          </td>
+          <td>
             {% if p.enabled %}
               <span class="badge bg-success-subtle text-success border border-success-subtle">Active</span>
             {% else %}
@@ -56,7 +64,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="text-center text-muted py-4">No policies defined. All requests will be denied by default.</td></tr>
+        <tr><td colspan="8" class="text-center text-muted py-4">No policies defined. All requests will be denied by default.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -112,6 +120,37 @@
           </button>
         </div>
         <div id="conditionRows"></div>
+
+        <hr class="border-secondary">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="fw-semibold small">RADIUS reply attributes
+            <span class="text-muted fw-normal">(optional — vendor roles, bandwidth, timeouts)</span></span>
+          <button class="btn btn-sm btn-outline-info" onclick="addReplyAttrRow()">
+            <i class="bi bi-plus-circle me-1"></i>Add Attribute
+          </button>
+        </div>
+        <div id="replyAttrRows"></div>
+        <datalist id="replyAttrNames">
+          <option value="Cisco-AVPair">Cisco role / redirect (e.g. shell:priv-lvl=15)</option>
+          <option value="Aruba-User-Role">Aruba user role</option>
+          <option value="Aruba-Admin-Role">Aruba admin role</option>
+          <option value="Filter-Id">Standard filter / role name (RFC 2865)</option>
+          <option value="Session-Timeout">Session timeout (seconds)</option>
+          <option value="Idle-Timeout">Idle timeout (seconds)</option>
+          <option value="Reply-Message">Reply message</option>
+          <option value="Fortinet-Group-Name">Fortinet group</option>
+          <option value="Mikrotik-Group">MikroTik group</option>
+          <option value="Mikrotik-Rate-Limit">MikroTik rate limit (e.g. 10M/10M)</option>
+          <option value="WISPr-Bandwidth-Max-Down">Max download (bps)</option>
+          <option value="WISPr-Bandwidth-Max-Up">Max upload (bps)</option>
+          <option value="Ruckus-User-Groups">Ruckus user group</option>
+          <option value="Extreme-Netlogin-Vlan">Extreme netlogin VLAN name</option>
+          <option value="Juniper-Local-User-Name">Juniper local user template</option>
+          <option value="PaloAlto-Admin-Role">Palo Alto admin role</option>
+          <option value="Huawei-Exec-Privilege">Huawei privilege level</option>
+          <option value="HP-Privilege-Level">HP/HPE privilege level</option>
+          <option value="Arista-AVPair">Arista AVPair</option>
+        </datalist>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -244,6 +283,38 @@ function buildConditions() {
   return conds;
 }
 
+// ── Vendor / custom reply attributes ────────────────────────────────────────
+function addReplyAttrRow() {
+  const row = document.createElement('div');
+  row.className = 'reply-attr-row d-flex align-items-center gap-2 mb-2';
+  row.innerHTML = `
+    <input type="text" class="form-control form-control-sm attr-name" list="replyAttrNames"
+           placeholder="Attribute name (e.g. Aruba-User-Role)" style="max-width:260px">
+    <input type="text" class="form-control form-control-sm attr-value"
+           placeholder="Value (e.g. employee)" style="min-width:200px">
+    <button class="btn btn-sm btn-outline-danger ms-auto" onclick="this.closest('.reply-attr-row').remove()">
+      <i class="bi bi-trash"></i>
+    </button>`;
+  document.getElementById('replyAttrRows').appendChild(row);
+}
+
+function buildReplyAttrs() {
+  const attrs = {};
+  for (const row of document.querySelectorAll('.reply-attr-row')) {
+    const name  = row.querySelector('.attr-name').value.trim();
+    const value = row.querySelector('.attr-value').value.trim();
+    if (!name && !value) continue;               // ignore fully empty rows
+    if (!name || !value) { alert('Reply attribute rows need both a name and a value'); return null; }
+    if (name in attrs) {
+      // Repeated name → multi-valued attribute (e.g. several Cisco-AVPairs)
+      attrs[name] = Array.isArray(attrs[name]) ? [...attrs[name], value] : [attrs[name], value];
+    } else {
+      attrs[name] = value;
+    }
+  }
+  return attrs;
+}
+
 async function savePolicy() {
   const name = document.getElementById('p_name').value.trim();
   if (!name) { alert('Name is required'); return; }
@@ -251,12 +322,16 @@ async function savePolicy() {
   const conds = buildConditions();
   if (conds === null) return;  // validation failed
 
+  const replyAttrs = buildReplyAttrs();
+  if (replyAttrs === null) return;  // validation failed
+
   const body = {
     name,
     priority:   parseInt(document.getElementById('p_priority').value) || 100,
     action:     document.getElementById('p_action').value,
     conditions: conds,
     vlan:       parseInt(document.getElementById('p_vlan').value) || null,
+    reply_attributes: Object.keys(replyAttrs).length ? replyAttrs : null,
   };
   const r = await fetch('/api/v1/policies', {
     method: 'POST',
@@ -284,6 +359,7 @@ document.getElementById('addPolicyModal').addEventListener('show.bs.modal', () =
   document.getElementById('p_action').value = 'PERMIT';
   document.getElementById('p_vlan').value = '';
   document.getElementById('conditionRows').innerHTML = '';
+  document.getElementById('replyAttrRows').innerHTML = '';
   rowIdx = 0;
 });
 </script>

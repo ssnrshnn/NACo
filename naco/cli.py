@@ -42,9 +42,66 @@ def cli():
     """NACo management commands."""
 
 
+def _check_deep(cfg) -> None:
+    """Test database and Redis connectivity, reporting results to stdout."""
+    click.echo()
+    click.secho("Deep connectivity checks:", bold=True)
+
+    # ── Database ──────────────────────────────────────────────────────
+    db_ok = False
+    try:
+        async def _probe_db():
+            from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import create_async_engine as _cae
+
+            engine = _cae(cfg.database.url, pool_pre_ping=True)
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            await engine.dispose()
+
+        asyncio.run(_probe_db())
+        click.secho("  Database    : reachable", fg="green")
+        db_ok = True
+    except Exception as exc:
+        click.secho(f"  Database    : UNREACHABLE — {exc}", fg="red")
+
+    # ── Redis ─────────────────────────────────────────────────────────
+    redis_ok = False
+    redis_url = cfg.cache.url
+    if redis_url:
+        try:
+            import redis as _redis
+            client = _redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=3.0)
+            client.ping()
+            client.close()
+            click.secho("  Redis       : reachable", fg="green")
+            redis_ok = True
+        except Exception as exc:
+            click.secho(f"  Redis       : UNREACHABLE — {exc}", fg="red")
+    else:
+        click.secho("  Redis       : not configured (cache.url is empty)", fg="yellow")
+
+    if not db_ok or not redis_ok:
+        click.echo()
+        click.secho("One or more deep checks failed.", fg="red")
+        sys.exit(1)
+    else:
+        click.echo()
+        click.secho("All deep checks passed.", fg="green")
+
+
 @cli.command("check-config")
-def check_config():
-    """Validate the configuration file and print a summary."""
+@click.option(
+    "--deep/--no-deep", default=False,
+    help="Also test database and Redis connectivity (requires running services).",
+)
+def check_config(deep: bool):
+    """Validate the configuration file and print a summary.
+
+    With ``--deep``, also verifies that PostgreSQL / SQLite and Redis are
+    reachable. This is useful as a pre-flight check before ``docker compose
+    up`` or as a liveness probe from a scheduler.
+    """
     try:
         cfg = get_config()
     except Exception as exc:
@@ -64,15 +121,30 @@ def check_config():
         "CHANGE_ME_session_secret_32_bytes_hex",
         "CHANGE_ME_api_secret_32_bytes_hex",
         "CHANGE_ME_csrf_secret_32_bytes_hex",
+        "change_me_session_secret", "change_me_api_secret", "change_me_csrf_secret",
     }
+    has_warnings = False
     if cfg.server.session_secret in _PLACEHOLDERS:
         click.secho("  WARNING: server.session_secret is still a placeholder!", fg="yellow")
+        has_warnings = True
     if cfg.server.api_secret in _PLACEHOLDERS:
         click.secho("  WARNING: server.api_secret is still a placeholder!", fg="yellow")
+        has_warnings = True
     if cfg.server.csrf_secret in _PLACEHOLDERS:
         click.secho("  WARNING: server.csrf_secret is still a placeholder!", fg="yellow")
+        has_warnings = True
     if cfg.server.admin_password in ("NACo@admin1", "CHANGE_ME_initial_admin_password", "admin"):
         click.secho("  WARNING: server.admin_password is still a placeholder!", fg="yellow")
+        has_warnings = True
+
+    if not cfg.server.debug and has_warnings:
+        click.secho(
+            "  ERROR: placeholder secrets with debug=False will prevent startup!",
+            fg="red",
+        )
+
+    if deep:
+        _check_deep(cfg)
 
 
 @cli.command("reset-password")
@@ -92,10 +164,10 @@ def reset_password(username: str, password: str):
 
     async def _reset():
         from sqlalchemy import select
-        from naco.db.database import init_db
-        from naco.db.database import _get_session_factory
-        from naco.db.models import AdminUser
+
         from naco.api.auth import hash_password
+        from naco.db.database import _get_session_factory, init_db
+        from naco.db.models import AdminUser
 
         await init_db()
         factory = _get_session_factory()
@@ -260,6 +332,7 @@ def db_upgrade():
     """Run Alembic migrations (upgrade to head)."""
     try:
         from alembic.config import Config
+
         from alembic import command
     except ImportError:
         click.secho("alembic is not installed. Run: pip install alembic", fg="red")
@@ -313,7 +386,8 @@ def rehash_passwords(dry_run: bool, target_cost: int):
 
     async def _scan():
         from sqlalchemy import select
-        from naco.db.database import init_db, _get_session_factory
+
+        from naco.db.database import _get_session_factory, init_db
         from naco.db.models import AdminUser
 
         await init_db()

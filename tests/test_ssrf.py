@@ -10,9 +10,10 @@ from __future__ import annotations
 import pytest
 
 from naco.core.netutils import (
-    UrlPolicyError, is_safe_outbound_url, validate_outbound_url,
+    UrlPolicyError,
+    is_safe_outbound_url,
+    validate_outbound_url,
 )
-
 
 # ---------------------------------------------------------------------------
 # Scheme allowlist.

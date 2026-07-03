@@ -11,7 +11,6 @@ isn't available (e.g. on a developer laptop without ``freeradius-utils``).
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import textwrap
 import threading
@@ -62,7 +61,7 @@ def test_radclient_pap_reject_for_unknown_user(
     if not have_radclient:
         pytest.skip("radclient (freeradius-utils) not installed")
 
-    server, cfg = radius_server
+    _server, cfg = radius_server
     req = tmp_path / "req.txt"
     req.write_text(textwrap.dedent("""\
         User-Name = "ghost"

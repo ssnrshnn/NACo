@@ -44,9 +44,9 @@ import asyncio
 import functools
 import os
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, Form, Request, Response, status as http_status
+from fastapi import Depends, FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -55,14 +55,29 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.api.auth import (
-    create_access_token, has_role, hash_password, needs_rehash, verify_password,
+    has_role,
+    hash_password,
+    needs_rehash,
+    verify_password_async,
 )
 from naco.config import get_config
 from naco.db import get_db
 from naco.db.models import (
-    ActiveSession, AdminRole, AdminUser, AuthLog, AuthResult,
-    CommandSet, Device, Group, GuestSession, NasClient, Policy,
-    TacacsClient, TacacsLog, User, VlanMapping,
+    ActiveSession,
+    AdminRole,
+    AdminUser,
+    AuthLog,
+    AuthResult,
+    CommandSet,
+    Device,
+    Group,
+    GuestSession,
+    NasClient,
+    Policy,
+    TacacsClient,
+    TacacsLog,
+    User,
+    VlanMapping,
 )
 
 app = FastAPI(title="NACo Admin", docs_url=None, redoc_url=None)
@@ -72,7 +87,20 @@ templates = Jinja2Templates(directory=os.path.join(_BASE, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(_BASE, "static")), name="static")
 
 import json as _json
-templates.env.filters["from_json"] = _json.loads
+
+
+def _from_json(value):
+    """Tolerant JSON filter — the JSON column type already returns parsed
+    lists/dicts on Postgres, but SQLite (and old rows) may hand back text."""
+    if isinstance(value, (list, dict)) or value is None:
+        return value if value is not None else []
+    try:
+        return _json.loads(value)
+    except (ValueError, TypeError):
+        return []
+
+
+templates.env.filters["from_json"] = _from_json
 
 
 # Make the per-request CSP nonce available to templates. Usage in Jinja:
@@ -104,9 +132,9 @@ _SESSION_MAX_AGE   = 3600 * 8   # 8 hours
 # ---------------------------------------------------------------------------
 # CSRF protection — signed token per session, validated on every state-changing POST
 # ---------------------------------------------------------------------------
-import secrets as _secrets
-import hmac as _hmac
 import hashlib as _hashlib
+import hmac as _hmac
+import secrets as _secrets
 
 _CSRF_COOKIE = "naco_csrf"
 
@@ -180,7 +208,6 @@ templates.TemplateResponse = _csrf_template_response
 # ---------------------------------------------------------------------------
 
 from starlette.middleware.base import BaseHTTPMiddleware
-
 
 # Paths that legitimately accept POSTs without a CSRF token, either because
 # they pre-date the session cookie (the login form) or because they're API
@@ -314,7 +341,7 @@ def _extract_csrf_from_body(body: bytes, content_type: str) -> str:
             if b'name="csrf_token"' not in part:
                 continue
             # Split off the headers / body separator (CRLF CRLF).
-            head, _, value = part.partition(b"\r\n\r\n")
+            _head, _, value = part.partition(b"\r\n\r\n")
             if not value:
                 continue
             # Strip *only* the trailing CRLF that precedes the next boundary
@@ -359,7 +386,6 @@ app.add_middleware(CSRFMiddleware)
 # this; the impact is low because reflected-XSS via attribute style is
 # limited to UI defacement.
 
-import secrets as _secrets
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -416,8 +442,12 @@ app.add_middleware(RequestIDMiddleware)
 # Login rate limiter — shared with the REST API via core.ratelimit
 # ---------------------------------------------------------------------------
 from naco.core.ratelimit import (
-    check_account_lock, check_rate_limit, clear_account_failures, clear_failures,
-    record_account_failure, record_failure,
+    check_account_lock,
+    check_rate_limit,
+    clear_account_failures,
+    clear_failures,
+    record_account_failure,
+    record_failure,
 )
 
 
@@ -490,7 +520,7 @@ async def _resolve_admin(request: Request, db: AsyncSession) -> AdminUser | None
     username = _get_session_user(request)
     if not username:
         return None
-    stmt = select(AdminUser).where(AdminUser.username == username, AdminUser.enabled == True)
+    stmt = select(AdminUser).where(AdminUser.username == username, AdminUser.enabled)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
@@ -577,16 +607,16 @@ async def do_login(
             status_code=429,
         )
 
-    stmt = select(AdminUser).where(AdminUser.username == username, AdminUser.enabled == True)
+    stmt = select(AdminUser).where(AdminUser.username == username, AdminUser.enabled)
     user = (await db.execute(stmt)).scalar_one_or_none()
 
     # Constant-time bcrypt on the missing-user branch — see comment in
     # ``naco.api.auth.dummy_verify`` for why.
     if user is None:
-        from naco.api.auth import dummy_verify
-        dummy_verify(password)
+        from naco.api.auth import dummy_verify_async
+        await dummy_verify_async(password)
 
-    if user and verify_password(password, user.password_hash):
+    if user and await verify_password_async(password, user.password_hash):
         # TOTP verification (if enabled for this user)
         if user.totp_secret:
             import pyotp
@@ -602,7 +632,7 @@ async def do_login(
 
         clear_failures(ip)
         clear_account_failures(username)
-        user.last_login = datetime.now(timezone.utc)
+        user.last_login = datetime.now(UTC)
 
         # Opportunistic bcrypt cost upgrade — see comment in
         # ``naco.api.routes.login`` for rationale.
@@ -652,7 +682,7 @@ async def logout_get(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     user = _require_auth(request)
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
     stats = {
         "total_users":    (await db.execute(select(func.count()).select_from(User))).scalar_one(),
@@ -673,8 +703,8 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         )).scalar_one(),
         "guest_active":   (await db.execute(
             select(func.count()).select_from(GuestSession).where(
-                GuestSession.active == True,
-                GuestSession.expires_at > datetime.now(timezone.utc),
+                GuestSession.active,
+                GuestSession.expires_at > datetime.now(UTC),
             )
         )).scalar_one(),
     }
@@ -743,34 +773,96 @@ async def policies_page(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Auth Logs
+# Centralized Logs (Auth + TACACS+ unified view)
 # ---------------------------------------------------------------------------
 
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(
     request:  Request,
+    tab:      str = "all",
     page:     int = 1,
     result:   str = "",
     db: AsyncSession = Depends(get_db),
 ):
     user = _require_auth(request)
     per_page = 50
-    stmt = select(AuthLog).order_by(AuthLog.timestamp.desc())
+    if tab not in ("all", "auth", "tacacs"):
+        tab = "all"
+
+    # Totals for the tab badges
+    total_auth = (await db.execute(
+        select(func.count()).select_from(AuthLog)
+    )).scalar_one()
+    total_tacacs = (await db.execute(
+        select(func.count()).select_from(TacacsLog)
+    )).scalar_one()
+    total_all = total_auth + total_tacacs
+
+    # Sanitise result filter
+    filter_result = ""
     if result:
         valid_results = {e.value for e in AuthResult}
         if result.upper() in valid_results:
-            stmt = stmt.where(AuthLog.result == result.upper())
+            filter_result = result.upper()
+
+    merged: list = []
+
+    if tab in ("all", "auth"):
+        auth_stmt = select(AuthLog).order_by(AuthLog.timestamp.desc())
+        if filter_result:
+            auth_stmt = auth_stmt.where(AuthLog.result == filter_result)
+        if tab == "auth":
+            auth_stmt = auth_stmt.offset((page - 1) * per_page).limit(per_page)
         else:
-            result = ""  # ignore invalid filter value
-    stmt = stmt.offset((page - 1) * per_page).limit(per_page)
-    rows = (await db.execute(stmt)).scalars().all()
-    total = (await db.execute(
-        select(func.count()).select_from(AuthLog)
-    )).scalar_one()
-    return templates.TemplateResponse(request, "auth_logs.html", {
-        "request": request, "user": user, "logs": rows,
-        "page": page, "per_page": per_page, "total": total,
-        "filter_result": result,
+            auth_stmt = auth_stmt.limit(per_page * 2)
+        auth_rows = (await db.execute(auth_stmt)).scalars().all()
+        for r in auth_rows:
+            r._source = "auth"
+        merged.extend(auth_rows)
+
+    if tab in ("all", "tacacs"):
+        tac_stmt = select(TacacsLog).order_by(TacacsLog.timestamp.desc())
+        if filter_result:
+            if filter_result == "SUCCESS":
+                tac_stmt = tac_stmt.where(TacacsLog.result.in_(["PASS", "SUCCESS", "LOGGED"]))
+            elif filter_result == "FAILURE":
+                tac_stmt = tac_stmt.where(TacacsLog.result.in_(["FAIL", "FAILURE"]))
+        if tab == "tacacs":
+            tac_stmt = tac_stmt.offset((page - 1) * per_page).limit(per_page)
+        else:
+            tac_stmt = tac_stmt.limit(per_page * 2)
+        tac_rows = (await db.execute(tac_stmt)).scalars().all()
+        for r in tac_rows:
+            r._source = "tacacs"
+        merged.extend(tac_rows)
+
+    # For the "all" tab, merge-sort by timestamp descending and paginate
+    if tab == "all":
+        merged.sort(key=lambda e: e.timestamp, reverse=True)
+        start = (page - 1) * per_page
+        merged = merged[start:start + per_page]
+
+    # Compute total for the active tab (with filters)
+    if tab == "auth":
+        if filter_result:
+            total = (await db.execute(
+                select(func.count()).select_from(AuthLog).where(AuthLog.result == filter_result)
+            )).scalar_one()
+        else:
+            total = total_auth
+    elif tab == "tacacs":
+        total = total_tacacs
+    else:
+        total = total_all
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    return templates.TemplateResponse(request, "logs.html", {
+        "request": request, "user": user, "logs": merged,
+        "tab": tab, "page": page, "per_page": per_page,
+        "total": total, "total_pages": total_pages,
+        "total_all": total_all, "total_auth": total_auth,
+        "total_tacacs": total_tacacs, "filter_result": filter_result,
     })
 
 
@@ -800,7 +892,7 @@ async def guests_page(request: Request, db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(
         select(GuestSession).order_by(GuestSession.created_at.desc()).limit(100)
     )).scalars().all()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Build portal URL from config — never trust the Host header for URL construction
     cfg_host = request.headers.get("host", "").split(":")[0] or "localhost"
     # Validate host: only allow alphanumeric, dots, hyphens (valid hostname chars)
@@ -851,7 +943,10 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
     URLs that act as data egress channels).
     """
     await _require_role(request, db, AdminRole.SUPERUSER)
-    import yaml, os, re as _re_settings
+    import os
+    import re as _re_settings
+
+    import yaml
 
     form = await request.form()
     section = form.get("section", "")
@@ -977,7 +1072,7 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
     except OSError as _exc:
         return RedirectResponse(
-            url=f"/settings?error=Cannot+write+config+(read-only+filesystem)",
+            url="/settings?error=Cannot+write+config+(read-only+filesystem)",
             status_code=303,
         )
 
@@ -997,6 +1092,7 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 from fastapi.responses import JSONResponse
+
 
 @app.post("/settings/test-log/{target}")
 async def test_log_forwarding(target: str, request: Request, db: AsyncSession = Depends(get_db)):
@@ -1084,25 +1180,12 @@ async def delete_group(group_id: int, request: Request, db: AsyncSession = Depen
 
 
 # ---------------------------------------------------------------------------
-# TACACS+ Logs
+# TACACS+ Logs (redirect to unified /logs?tab=tacacs)
 # ---------------------------------------------------------------------------
 
-@app.get("/logs/tacacs", response_class=HTMLResponse)
-async def tacacs_logs_page(
-    request: Request,
-    page: int = 1,
-    db: AsyncSession = Depends(get_db),
-):
-    user = _require_auth(request)
-    per_page = 50
-    stmt = select(TacacsLog).order_by(TacacsLog.timestamp.desc())
-    stmt = stmt.offset((page - 1) * per_page).limit(per_page)
-    rows = (await db.execute(stmt)).scalars().all()
-    total = (await db.execute(select(func.count()).select_from(TacacsLog))).scalar_one()
-    return templates.TemplateResponse(request, "tacacs_logs.html", {
-        "request": request, "user": user, "logs": rows,
-        "page": page, "per_page": per_page, "total": total,
-    })
+@app.get("/logs/tacacs")
+async def tacacs_logs_page(request: Request, page: int = 1):
+    return RedirectResponse(url=f"/logs?tab=tacacs&page={page}", status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -1139,7 +1222,7 @@ async def delete_session(session_id: int, request: Request, db: AsyncSession = D
 async def _get_web_nas_secret(nas_ip: str, db: AsyncSession) -> str:
     """Look up NAS shared secret from DB then config for CoA."""
     c = (await db.execute(
-        select(NasClient).where(NasClient.ip_address == nas_ip, NasClient.enabled == True)
+        select(NasClient).where(NasClient.ip_address == nas_ip, NasClient.enabled)
     )).scalar_one_or_none()
     if c:
         return c.secret
@@ -1381,7 +1464,7 @@ async def create_admin_user(
     is_superuser: str = Form(""),
     db: AsyncSession = Depends(get_db),
 ):
-    actor = await _require_role(request, db, AdminRole.SUPERUSER)
+    await _require_role(request, db, AdminRole.SUPERUSER)
     from naco.core.utils import client_ip
     ip = client_ip(request)
     if not check_rate_limit(f"admin-create:{ip}"):
@@ -1432,7 +1515,7 @@ async def delete_admin_user(
         remaining = (await db.execute(
             select(func.count()).select_from(AdminUser).where(
                 AdminUser.role == AdminRole.SUPERUSER,
-                AdminUser.enabled == True,
+                AdminUser.enabled,
                 AdminUser.id != a.id,
             )
         )).scalar_one()
@@ -1471,7 +1554,7 @@ async def change_admin_role(
         remaining = (await db.execute(
             select(func.count()).select_from(AdminUser).where(
                 AdminUser.role == AdminRole.SUPERUSER,
-                AdminUser.enabled == True,
+                AdminUser.enabled,
                 AdminUser.id != a.id,
             )
         )).scalar_one()
@@ -1520,7 +1603,7 @@ async def change_admin_password(
         raise Forbidden("Only SUPERUSER admins can change another admin's password.")
 
     # Always re-verify the acting user's own password.
-    if not verify_password(current_password, actor.password_hash):
+    if not await verify_password_async(current_password, actor.password_hash):
         return RedirectResponse(url="/admin-users?error=Current+password+incorrect", status_code=303)
 
     if len(new_password) < 8:
@@ -1538,7 +1621,9 @@ async def change_admin_password(
 @app.get("/system", response_class=HTMLResponse)
 async def system_page(request: Request, db: AsyncSession = Depends(get_db)):
     user = _require_auth(request)
-    import psutil, platform
+    import platform
+
+    import psutil
 
     services = []
     for svc in ("naco", "freeradius"):

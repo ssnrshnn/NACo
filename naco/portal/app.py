@@ -31,15 +31,15 @@ import secrets
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import FastAPI, Form, Request, Depends, Response
+from fastapi import Depends, FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.config import get_config
 from naco.core.logger import get_logger
-from naco.core.utils import client_ip, generate_token, normalise_mac, utcnow
 from naco.core.ratelimit import check_rate_limit
+from naco.core.utils import client_ip, generate_token, normalise_mac, utcnow
 from naco.db import get_db
 from naco.db.models import GuestSession
 
@@ -97,20 +97,28 @@ def _csrf_validate(presented: str, cookie_value: str) -> bool:
 # Called from main.py _lifespan so it shares the application event loop.
 # ---------------------------------------------------------------------------
 
+async def expire_overdue_guest_sessions(db: AsyncSession) -> int:
+    """Mark overdue guest sessions inactive; return how many were expired."""
+    from sqlalchemy import update
+
+    result = await db.execute(
+        update(GuestSession)
+        .where(GuestSession.active, GuestSession.expires_at <= utcnow())
+        .values(active=False)
+    )
+    await db.commit()
+    return result.rowcount or 0
+
+
 async def expire_guest_sessions_loop() -> None:
     """Background task: mark overdue guest sessions inactive every 60 s."""
-    from sqlalchemy import update
     from naco.db.database import AsyncSessionLocal
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                now = utcnow()
-                await db.execute(
-                    update(GuestSession)
-                    .where(GuestSession.active == True, GuestSession.expires_at <= now)
-                    .values(active=False)
-                )
-                await db.commit()
+                expired = await expire_overdue_guest_sessions(db)
+                if expired:
+                    log.info("Guest-session expiry: deactivated %d session(s)", expired)
         except Exception as exc:
             log.warning("Guest-session expiry cleanup failed: %s", exc)
         await asyncio.sleep(60)
@@ -209,7 +217,7 @@ async def register(
         from sqlalchemy import update
         await db.execute(
             update(GuestSession)
-            .where(GuestSession.mac_address == norm_mac, GuestSession.active == True)
+            .where(GuestSession.mac_address == norm_mac, GuestSession.active)
             .values(active=False)
         )
         await db.flush()
@@ -251,7 +259,10 @@ async def success(request: Request, token: str = "", db: AsyncSession = Depends(
 
     # Generate QR code image from server-side config — PSK never leaves the server
     qr_base64 = ""
-    import io, base64, qrcode
+    import base64
+    import io
+
+    import qrcode
     qr_payload = f"WIFI:T:WPA;S:{cfg.guest_ssid};P:{cfg.guest_psk};;"
     img = qrcode.make(qr_payload)
     buf = io.BytesIO()
@@ -277,7 +288,7 @@ async def session_status(mac: str, db: AsyncSession = Depends(get_db)):
         select(GuestSession)
         .where(
             GuestSession.mac_address == norm_mac,
-            GuestSession.active == True,
+            GuestSession.active,
             GuestSession.expires_at > utcnow(),
         )
         .order_by(GuestSession.created_at.desc())

@@ -15,15 +15,16 @@ client IP — covered by integration tests, not here.
 """
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from httpx import AsyncClient
 
 from naco.core.request_id import (
-    HEADER_NAME, RequestIDFilter, get_request_id, new_request_id, set_request_id,
+    HEADER_NAME,
+    RequestIDFilter,
+    get_request_id,
+    new_request_id,
+    set_request_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Pure-Python: contextvar accessors and the logging filter.

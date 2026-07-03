@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum, auto
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     # Authentication
     AUTH_SUCCESS   = "AUTH_SUCCESS"
     AUTH_FAILURE   = "AUTH_FAILURE"
@@ -29,6 +29,8 @@ class EventType(str, Enum):
     TACACS_AUTH    = "TACACS_AUTH"
     TACACS_AUTHZ   = "TACACS_AUTHZ"
     TACACS_ACCT    = "TACACS_ACCT"
+    # Security
+    DISABLED_BLOCKED = "DISABLED_BLOCKED"
     # System
     SYSTEM_START   = "SYSTEM_START"
     SYSTEM_STOP    = "SYSTEM_STOP"
@@ -37,7 +39,7 @@ class EventType(str, Enum):
 @dataclass
 class Event:
     type: EventType
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     data: dict[str, Any] = field(default_factory=dict)
 
     def __str__(self) -> str:

@@ -10,9 +10,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from datetime import datetime, timezone
 
-from naco.core.events import EventBus, Event, EventType
+from naco.core.events import Event, EventBus, EventType
 
 
 class _Counter:
@@ -62,6 +61,7 @@ auth_total = _Counter()           # labels: result=success|failure
 radius_requests = _Counter()      # labels: type=auth|acct
 tacacs_requests = _Counter()      # labels: type=auth|authz|acct
 new_devices = _Counter()          # no labels
+disabled_blocked = _Counter()     # labels: entity=user|admin|nas|policy
 active_sessions = _Gauge()        # set from DB periodically
 uptime_gauge = _Gauge()           # seconds since start
 
@@ -91,6 +91,9 @@ def _handle_event(event: Event) -> None:
             tacacs_requests.inc({"type": "authz"})
         case EventType.TACACS_ACCT:
             tacacs_requests.inc({"type": "acct"})
+        case EventType.DISABLED_BLOCKED:
+            entity = (event.data or {}).get("entity", "unknown")
+            disabled_blocked.inc({"entity": entity})
 
 
 # ── Background subscriber ────────────────────────────────────────────────────
@@ -157,6 +160,11 @@ def render_metrics() -> str:
             "naco_new_devices_total",
             "Total new devices discovered",
             new_devices,
+        ),
+        _render_counter(
+            "naco_disabled_blocked_total",
+            "Auth attempts blocked because entity was disabled",
+            disabled_blocked,
         ),
         _render_gauge(
             "naco_active_sessions",

@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
-from naco.db.models import AuthMethod, AuthResult, CommandRuleAction, PolicyAction
+from naco.db.models import CommandRuleAction, PolicyAction
 
 
 def _validate_password_complexity(password: str) -> str:
@@ -168,8 +168,37 @@ class PolicyCreate(BaseModel):
     conditions:  list[dict[str, Any]] = []
     action:      PolicyAction = PolicyAction.PERMIT
     vlan:        int | None = Field(None, ge=1, le=4094)
+    reply_attributes: dict[str, Any] | None = None
     group_id:    int | None = None
     enabled:     bool = True
+
+    @field_validator("reply_attributes")
+    @classmethod
+    def validate_reply_attributes(cls, v):
+        import re
+        if v is None:
+            return v
+        if len(v) > 32:
+            raise ValueError("Too many reply attributes (max 32)")
+        name_re = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
+        for name, value in v.items():
+            if not name_re.match(name):
+                raise ValueError(
+                    f"Invalid attribute name {name!r} — letters, digits and hyphens only"
+                )
+            values = value if isinstance(value, list) else [value]
+            if not values:
+                raise ValueError(f"Attribute {name!r} has an empty value list")
+            for item in values:
+                if not isinstance(item, (str, int)):
+                    raise ValueError(
+                        f"Attribute {name!r} values must be strings or integers"
+                    )
+                if isinstance(item, str) and len(item) > 253:
+                    raise ValueError(
+                        f"Attribute {name!r} value too long (max 253 bytes per RFC 2865)"
+                    )
+        return v
 
     @field_validator("conditions")
     @classmethod
@@ -204,6 +233,7 @@ class PolicyUpdate(BaseModel):
     conditions:  list[dict[str, Any]] | None = None
     action:      PolicyAction | None = None
     vlan:        int | None = None
+    reply_attributes: dict[str, Any] | None = None
     group_id:    int | None = None
     enabled:     bool | None = None
 
@@ -214,6 +244,11 @@ class PolicyUpdate(BaseModel):
             return PolicyCreate.validate_conditions(v)
         return v
 
+    @field_validator("reply_attributes")
+    @classmethod
+    def validate_reply_attributes(cls, v):
+        return PolicyCreate.validate_reply_attributes(v)
+
 
 class PolicyOut(BaseModel):
     id:          int
@@ -223,13 +258,14 @@ class PolicyOut(BaseModel):
     conditions:  list[dict[str, Any]]
     action:      str
     vlan:        int | None
+    reply_attributes: dict[str, Any] | None = None
     group_id:    int | None
     enabled:     bool
     created_at:  datetime
 
     model_config = {"from_attributes": True}
 
-    @field_validator("conditions", mode="before")
+    @field_validator("conditions", "reply_attributes", mode="before")
     @classmethod
     def parse_conditions(cls, v):
         import json

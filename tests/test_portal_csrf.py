@@ -14,7 +14,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.db import get_db
-from naco.portal.app import app as portal_app, _CSRF_COOKIE
+from naco.portal.app import _CSRF_COOKIE
+from naco.portal.app import app as portal_app
 
 
 @pytest_asyncio.fixture

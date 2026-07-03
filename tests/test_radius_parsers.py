@@ -17,7 +17,6 @@ from naco.radius.server import (
     parse_vlan_attr,
 )
 
-
 # ---------------------------------------------------------------------------
 # parse_vlan_attr
 # ---------------------------------------------------------------------------
@@ -135,3 +134,33 @@ class TestPapDecoder:
         cipher = _encode_pap("Secret1234", secret, auth)
         decoded = _decode_pap_password(cipher, b"bad-secret", auth)
         assert decoded != "Secret1234"
+
+
+# ---------------------------------------------------------------------------
+# _acct_octets — RFC 2869 Gigawords rollover
+# ---------------------------------------------------------------------------
+
+class _FakePkt(dict):
+    def get(self, key, default=None):
+        return dict.get(self, key, default)
+
+
+class TestAcctOctets:
+    def test_plain_octets(self):
+        from naco.radius.server import _acct_octets
+        pkt = _FakePkt({"Acct-Input-Octets": [123456]})
+        assert _acct_octets(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords") == 123456
+
+    def test_gigawords_rollover(self):
+        from naco.radius.server import _acct_octets
+        pkt = _FakePkt({"Acct-Input-Octets": [100], "Acct-Input-Gigawords": [2]})
+        assert _acct_octets(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords") == (2 << 32) + 100
+
+    def test_missing_attrs_zero(self):
+        from naco.radius.server import _acct_octets
+        assert _acct_octets(_FakePkt(), "Acct-Input-Octets", "Acct-Input-Gigawords") == 0
+
+    def test_garbage_values_zero(self):
+        from naco.radius.server import _acct_octets
+        pkt = _FakePkt({"Acct-Input-Octets": ["not-a-number"], "Acct-Input-Gigawords": [None]})
+        assert _acct_octets(pkt, "Acct-Input-Octets", "Acct-Input-Gigawords") == 0

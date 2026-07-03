@@ -14,14 +14,11 @@ from __future__ import annotations
 import hashlib
 import struct
 
-import pytest
-
 from naco.radius.coa import (
     DISCONNECT_ACK,
     _build_disconnect_request,
     verify_response_authenticator,
 )
-
 
 SECRET = "testing123"
 NAS_IP = "10.0.0.1"

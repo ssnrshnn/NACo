@@ -26,7 +26,6 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
-
 # ──────────────────────────────────────────────────────────────────────────
 # Hard-coded denylist of cloud-metadata hosts (case-insensitive substring
 # match on the hostname). These are usually reachable from any compute

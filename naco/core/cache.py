@@ -105,4 +105,4 @@ async def close_clients() -> None:
         _sync_client = None
 
 
-__all__ = ["get_redis", "get_sync_redis", "close_clients"]
+__all__ = ["close_clients", "get_redis", "get_sync_redis"]

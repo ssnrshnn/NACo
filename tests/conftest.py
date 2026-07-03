@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -11,12 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Point config at a minimal in-memory YAML before any naco imports
 os.environ["NACO_CONFIG"] = os.path.join(os.path.dirname(__file__), "test_config.yaml")
 
-from naco.db.database import Base
-from naco.db import get_db
 from naco.api import create_api_app
 from naco.api.auth import hash_password
+from naco.db import get_db
+from naco.db.database import Base
 from naco.db.models import AdminUser
-
 
 # ---------------------------------------------------------------------------
 # In-memory SQLite engine & session

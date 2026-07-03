@@ -20,12 +20,11 @@ gives us a clean, container-friendly auth model.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, select, update as sa_update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.config import get_config
@@ -34,9 +33,14 @@ from naco.core.logger import get_logger
 from naco.core.utils import normalise_mac
 from naco.db import get_db
 from naco.db.models import (
-    ActiveSession, AuthLog, AuthMethod, AuthResult, User,
+    ActiveSession,
+    AuthLog,
+    AuthMethod,
+    AuthResult,
+    User,
 )
-from naco.policy.engine import AuthContext, engine as policy_engine
+from naco.policy.engine import AuthContext
+from naco.policy.engine import engine as policy_engine
 
 log = get_logger(__name__)
 
@@ -117,7 +121,7 @@ async def eap_auth(body: EapAuthRequest, db: AsyncSession = Depends(get_db)):
     All reject branches also call :func:`dummy_verify` once on the unknown-user
     path so timing doesn't leak whether a username exists locally.
     """
-    from naco.api.auth import dummy_verify
+    from naco.api.auth import dummy_verify_async, verify_password_async
 
     mac = _calling_station_to_mac(body.calling_station_id)
 
@@ -131,20 +135,20 @@ async def eap_auth(body: EapAuthRequest, db: AsyncSession = Depends(get_db)):
         return {"Reply-Message": "Access denied"}
 
     user = (await db.execute(
-        select(User).where(User.username == body.username, User.enabled == True)
+        select(User).where(User.username == body.username, User.enabled)
     )).scalar_one_or_none()
 
     if user is None:
         # Outcome 4 — pay the bcrypt cost so this branch looks the same as
         # outcome 3 to a remote observer.
-        dummy_verify(pwd)
+        await dummy_verify_async(pwd)
 
         from naco.auth.ldap import ldap_authenticate, ldap_auto_provision
         ldap_result = await ldap_authenticate(body.username, pwd)
         if ldap_result is not None:
             await ldap_auto_provision(body.username, ldap_result, db)
             user = (await db.execute(
-                select(User).where(User.username == body.username, User.enabled == True)
+                select(User).where(User.username == body.username, User.enabled)
             )).scalar_one_or_none()
 
         if user is None:
@@ -153,7 +157,7 @@ async def eap_auth(body: EapAuthRequest, db: AsyncSession = Depends(get_db)):
             return {"Reply-Message": "Access denied"}
     else:
         # Outcome 3 — wrong password always runs the bcrypt comparison.
-        if not bcrypt.checkpw(pwd.encode(), user.password_hash.encode()):
+        if not await verify_password_async(pwd, user.password_hash):
             await _log_auth(db, body.username, mac, body.nas_ip or "",
                             AuthResult.FAILURE, "Wrong password", "")
             return {"Reply-Message": "Access denied"}
@@ -193,6 +197,9 @@ async def eap_auth(body: EapAuthRequest, db: AsyncSession = Depends(get_db)):
             "Tunnel-Medium-Type":       "6",
             "Tunnel-Private-Group-Id":  str(decision.vlan),
         })
+    # Per-policy vendor attributes (Aruba-User-Role, Cisco-AVPair, …) — rlm_rest
+    # maps top-level JSON keys onto RADIUS reply attributes by name.
+    response.update(decision.reply_attributes or {})
     return response
 
 
@@ -207,7 +214,7 @@ async def eap_authorize(body: EapAuthorizeRequest, db: AsyncSession = Depends(ge
 
     group_name = ""
     user = (await db.execute(
-        select(User).where(User.username == body.username, User.enabled == True)
+        select(User).where(User.username == body.username, User.enabled)
     )).scalar_one_or_none()
     if user and user.group_id:
         from sqlalchemy.orm import selectinload
@@ -230,6 +237,7 @@ async def eap_authorize(body: EapAuthorizeRequest, db: AsyncSession = Depends(ge
                 "Tunnel-Medium-Type":       "6",
                 "Tunnel-Private-Group-Id":  str(decision.vlan),
             })
+        resp.update(decision.reply_attributes or {})
         return resp
     return {"Reply-Message": "Not authorized"}
 

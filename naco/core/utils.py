@@ -6,8 +6,7 @@ import hmac
 import re
 import secrets
 import string
-from datetime import datetime, time, timezone
-
+from datetime import UTC, datetime, time
 
 # ---------------------------------------------------------------------------
 # MAC address helpers
@@ -52,7 +51,7 @@ def generate_token(nbytes: int = 32) -> str:
 # ---------------------------------------------------------------------------
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def is_within_time_range(start: str, end: str, now: time | None = None) -> bool:

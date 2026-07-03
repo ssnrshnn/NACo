@@ -29,7 +29,7 @@ import hashlib
 import hmac
 import os
 import re
-import threading
+from datetime import UTC
 from typing import Any
 
 import pyrad.dictionary
@@ -37,14 +37,22 @@ import pyrad.packet
 import pyrad.server
 
 from naco.config import get_config
-from naco.core.events import bus, Event, EventType
+from naco.core.events import Event, EventType, bus
 from naco.core.logger import get_logger
-from naco.core.utils import normalise_mac, chap_verify
+from naco.core.utils import chap_verify, normalise_mac
 from naco.db.database import AsyncSessionLocal
 from naco.db.models import (
-    AuthLog, AuthMethod, AuthResult, ActiveSession, Device, NasClient, PolicyAction, User,
+    ActiveSession,
+    AuthLog,
+    AuthMethod,
+    AuthResult,
+    Device,
+    NasClient,
+    PolicyAction,
+    User,
 )
-from naco.policy.engine import AuthContext, engine as policy_engine
+from naco.policy.engine import AuthContext
+from naco.policy.engine import engine as policy_engine
 
 log = get_logger(__name__)
 
@@ -53,7 +61,7 @@ _DICT_PATH = os.path.join(os.path.dirname(__file__), "dictionary")
 _MESSAGE_AUTHENTICATOR_TYPE = 80  # RFC 3579 §3.2
 
 # Module-level reference for graceful shutdown.
-_active_radius_server: "NACoRadiusServer | None" = None
+_active_radius_server: NACoRadiusServer | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -78,10 +86,28 @@ def _decode_pap_password(encrypted: bytes, secret: bytes | str, authenticator: b
     for i in range(0, len(encrypted), 16):
         block = encrypted[i:i+16]
         digest = hashlib.md5(secret + bytes(prev)).digest()
-        chunk  = bytes(a ^ b for a, b in zip(digest, block))
+        chunk  = bytes(a ^ b for a, b in zip(digest, block, strict=False))
         result += chunk
         prev = block
     return result.rstrip(b"\x00").decode("utf-8", errors="replace")
+
+
+def _acct_octets(pkt, octets_attr: str, gigawords_attr: str) -> int:
+    """Combine a 32-bit octet counter with its RFC 2869 Gigawords rollover.
+
+    NASes wrap Acct-*-Octets at 2^32 and count the wraps in the matching
+    Gigawords attribute; sessions moving more than 4 GiB are misreported
+    without it.
+    """
+    try:
+        octets = int((pkt.get(octets_attr, [0])[0]) or 0)
+    except (TypeError, ValueError):
+        octets = 0
+    try:
+        giga = int((pkt.get(gigawords_attr, [0])[0]) or 0)
+    except (TypeError, ValueError):
+        giga = 0
+    return (giga << 32) + octets
 
 
 def parse_vlan_attr(raw: Any) -> int | None:
@@ -165,12 +191,28 @@ class NACoRadiusServer(pyrad.server.Server):
             db_clients = asyncio.run_coroutine_threadsafe(
                 _load_db_nas_clients(), self._loop,
             ).result(timeout=5)
-            for ip, secret in db_clients:
-                if ip not in self._clients:
+            cfg_addrs = {c.address for c in self._cfg.clients}
+            db_map = dict(db_clients)
+
+            # Add new / update changed DB-managed clients. Entries from
+            # config.yaml always win over a DB row for the same address.
+            for ip, secret in db_map.items():
+                if ip in cfg_addrs:
+                    continue
+                if self._clients.get(ip) != secret:
+                    verb = "Updated secret for" if ip in self._clients else "Hot-loaded"
                     self._clients[ip] = secret
                     self._client_msgauth.setdefault(ip, self._cfg.require_message_authenticator)
                     self.hosts[ip] = pyrad.server.RemoteHost(ip, secret.encode(), ip)
-                    log.info("Hot-loaded NAS client %s from database", ip)
+                    log.info("%s NAS client %s from database", verb, ip)
+
+            # Drop DB-managed clients that were deleted or disabled.
+            for ip in list(self._clients):
+                if ip not in cfg_addrs and ip not in db_map:
+                    self._clients.pop(ip, None)
+                    self._client_msgauth.pop(ip, None)
+                    self.hosts.pop(ip, None)
+                    log.info("Removed NAS client %s (deleted or disabled in database)", ip)
         except Exception as exc:
             log.debug("NAS client reload failed: %s", exc)
 
@@ -178,7 +220,7 @@ class NACoRadiusServer(pyrad.server.Server):
     # Authentication handler
     # ------------------------------------------------------------------
 
-    def HandleAuthPacket(self, pkt: pyrad.packet.AuthPacket) -> None:  # noqa: N802
+    def HandleAuthPacket(self, pkt: pyrad.packet.AuthPacket) -> None:
         nas_ip = pkt.source[0]
         self._maybe_reload_db_clients()
 
@@ -190,7 +232,7 @@ class NACoRadiusServer(pyrad.server.Server):
         if not self._message_authenticator_valid(pkt, nas_ip):
             log.warning("Access-Request from %s missing/invalid Message-Authenticator", nas_ip)
             try:
-                reply = pkt.CreateReply(code=pyrad.packet.AccessReject)
+                reply = self._make_reply(pkt, pyrad.packet.AccessReject)
                 self.SendReplyPacket(pkt.fd, reply)
             except Exception:
                 pass
@@ -201,24 +243,33 @@ class NACoRadiusServer(pyrad.server.Server):
 
             policy_vlan: int | None = None
             policy_name: str = ""
+            reply_attrs: dict = {}
             if result == AuthResult.SUCCESS:
-                policy_vlan, result, reason, policy_name = self._run_sync(
+                policy_vlan, result, reason, policy_name, reply_attrs = self._run_sync(
                     self._apply_policy(username, pkt, method)
                 )
 
             if result == AuthResult.SUCCESS:
-                reply = pkt.CreateReply(code=pyrad.packet.AccessAccept)
+                reply = self._make_reply(pkt, pyrad.packet.AccessAccept)
                 vlan = policy_vlan if policy_vlan is not None else self._resolve_vlan(username, nas_ip, method, pkt)
                 if vlan:
+                    # RFC 3580 §3.31 dynamic VLAN assignment. pyrad expects
+                    # the RFC 2868 tag in the attribute *key* ("Attr:1"),
+                    # and encodes tagged integers as tag + 3-byte value.
                     try:
-                        reply["Tunnel-Type"]            = [("Virtual", 13)]
-                        reply["Tunnel-Medium-Type"]      = [("IEEE-802", 6)]
-                        reply["Tunnel-Private-Group-Id"] = [("Tagged", str(vlan))]
-                    except Exception:
-                        pass
+                        reply["Tunnel-Type:1"]             = 13          # VLAN
+                        reply["Tunnel-Medium-Type:1"]      = 6           # IEEE-802
+                        reply["Tunnel-Private-Group-Id:1"] = str(vlan)
+                    except Exception as exc:
+                        log.error(
+                            "Failed to attach VLAN %s to Access-Accept for user=%r: %s "
+                            "— NAS will fall back to its default VLAN",
+                            vlan, username, exc,
+                        )
+                self._attach_reply_attributes(reply, reply_attrs, username)
                 log.info("Access-ACCEPT user=%r nas=%s method=%s", username, nas_ip, method)
             else:
-                reply = pkt.CreateReply(code=pyrad.packet.AccessReject)
+                reply = self._make_reply(pkt, pyrad.packet.AccessReject)
                 log.info("Access-REJECT user=%r nas=%s reason=%r", username, nas_ip, reason)
 
             self.SendReplyPacket(pkt.fd, reply)
@@ -228,7 +279,7 @@ class NACoRadiusServer(pyrad.server.Server):
         except Exception as exc:
             log.exception("RADIUS auth handler error for NAS %s: %s", nas_ip, exc)
             try:
-                self.SendReplyPacket(pkt.fd, pkt.CreateReply(code=pyrad.packet.AccessReject))
+                self.SendReplyPacket(pkt.fd, self._make_reply(pkt, pyrad.packet.AccessReject))
             except Exception:
                 pass
 
@@ -236,7 +287,7 @@ class NACoRadiusServer(pyrad.server.Server):
     # Accounting handler
     # ------------------------------------------------------------------
 
-    def HandleAcctPacket(self, pkt: pyrad.packet.AcctPacket) -> None:  # noqa: N802
+    def HandleAcctPacket(self, pkt: pyrad.packet.AcctPacket) -> None:
         nas_ip   = pkt.source[0]
         status   = pkt.get("Acct-Status-Type", [None])[0]
         session  = pkt.get("Acct-Session-Id",  [""])[0]
@@ -250,7 +301,9 @@ class NACoRadiusServer(pyrad.server.Server):
                 self._loop,
             )
 
-        self.SendReplyPacket(pkt.fd, pkt.CreateReply())
+        reply = pkt.CreateReply()
+        reply.source = pkt.source
+        self.SendReplyPacket(pkt.fd, reply)
 
     # ------------------------------------------------------------------
     # Message-Authenticator validation (RFC 3579)
@@ -283,19 +336,68 @@ class NACoRadiusServer(pyrad.server.Server):
 
         secret = pkt.secret if isinstance(pkt.secret, bytes) else pkt.secret.encode()
 
-        # Rebuild the wire image of the packet with the MA value zeroed.
-        try:
-            saved = pkt[_MESSAGE_AUTHENTICATOR_TYPE]
-        except KeyError:
-            return False
-        pkt[_MESSAGE_AUTHENTICATOR_TYPE] = [b"\x00" * 16]
-        try:
-            raw = pkt.RequestPacket()
-        finally:
-            pkt[_MESSAGE_AUTHENTICATOR_TYPE] = saved
+        # The HMAC must be computed over the packet exactly as it appeared on
+        # the wire (RFC 3579 §3.2) — re-encoding via ``pkt.RequestPacket()``
+        # can reorder/regroup attributes and produce a different byte stream,
+        # which made NACo reject *valid* requests from real clients. Prefer
+        # the raw datagram pyrad captured at decode time.
+        raw = getattr(pkt, "raw_packet", None)
+        if raw and len(raw) >= 20:
+            attrs = bytearray(raw[20:])
+            offset = 0
+            while offset + 2 <= len(attrs):
+                atype, alen = attrs[offset], attrs[offset + 1]
+                if alen < 2 or offset + alen > len(attrs):
+                    return False  # malformed TLV stream
+                if atype == _MESSAGE_AUTHENTICATOR_TYPE and alen == 18:
+                    attrs[offset + 2:offset + 18] = b"\x00" * 16
+                offset += alen
+            wire = raw[:20] + bytes(attrs)
+        else:
+            # Fallback (packets built in-process, e.g. unit tests): rebuild
+            # the wire image with the MA value zeroed.
+            try:
+                saved = pkt[_MESSAGE_AUTHENTICATOR_TYPE]
+            except KeyError:
+                return False
+            pkt[_MESSAGE_AUTHENTICATOR_TYPE] = [b"\x00" * 16]
+            try:
+                wire = pkt.RequestPacket()
+            finally:
+                pkt[_MESSAGE_AUTHENTICATOR_TYPE] = saved
 
-        expected = hmac.new(secret, raw, hashlib.md5).digest()
+        expected = hmac.new(secret, wire, hashlib.md5).digest()
         return hmac.compare_digest(expected, received)
+
+    @staticmethod
+    def _make_reply(pkt: pyrad.packet.AuthPacket, code: int) -> pyrad.packet.AuthPacket:
+        """Build an Access-* reply with a Message-Authenticator.
+
+        Two pyrad-compat details live here so the handlers stay readable:
+
+        * ``AuthPacket.CreateReply(code=…)`` raises ``TypeError`` on pyrad
+          2.5 (``code`` collides with a positional arg) — the code must be
+          assigned after construction.
+        * ``SendReplyPacket`` addresses the datagram to ``reply.source``,
+          which ``CreateReply`` does *not* copy from the request — without
+          it the send raises ``AttributeError`` and the NAS never hears
+          back.
+        * Post-BlastRADIUS clients (CVE-2024-3596 hardening) require replies
+          to carry a valid MA when the request did — without it they
+          silently discard our Accept/Reject and retry until timeout. pyrad
+          computes the response HMAC (keyed on the request authenticator)
+          at encode time.
+        """
+        reply = pkt.CreateReply()
+        reply.code = code
+        reply.source = pkt.source
+        try:
+            reply.add_message_authenticator()
+        except Exception:
+            # A reply we cannot stamp is still better than no reply at all
+            # (pre-BlastRADIUS clients accept it).
+            pass
+        return reply
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -387,19 +489,23 @@ class NACoRadiusServer(pyrad.server.Server):
     # ---- DB helpers (run from sync context via _run_sync) ----
 
     async def _check_user_password(self, username: str, password: str) -> tuple[AuthResult, str]:
-        import bcrypt
-        from datetime import datetime, timezone
+        from datetime import datetime
+
+        from naco.api.auth import dummy_verify_async, verify_password_async
 
         async with AsyncSessionLocal() as db:
             from sqlalchemy import select
-            stmt = select(User).where(User.username == username, User.enabled == True)
+            stmt = select(User).where(User.username == username, User.enabled)
             row = (await db.execute(stmt)).scalar_one_or_none()
             if row is not None:
-                if bcrypt.checkpw(password.encode(), row.password_hash.encode()):
-                    row.last_login = datetime.now(timezone.utc)
+                if await verify_password_async(password, row.password_hash):
+                    row.last_login = datetime.now(UTC)
                     await db.commit()
                     return AuthResult.SUCCESS, ""
                 return AuthResult.FAILURE, "Wrong password"
+
+            # Constant-time: unknown users cost one bcrypt cycle too.
+            await dummy_verify_async(password)
 
             from naco.auth.ldap import ldap_authenticate, ldap_auto_provision
             ldap_result = await ldap_authenticate(username, password)
@@ -419,11 +525,15 @@ class NACoRadiusServer(pyrad.server.Server):
             from sqlalchemy import select
             stmt = select(Device).where(Device.mac_address == mac)
             dev = (await db.execute(stmt)).scalar_one_or_none()
+            if dev is not None and dev.authorized:
+                return AuthResult.SUCCESS, ""
+            # Not (or not yet) authorised in the inventory — a live captive-
+            # portal registration also authorises the MAC for its lifetime.
+            if await _has_active_guest_session(db, mac):
+                return AuthResult.SUCCESS, "Guest session"
             if dev is None:
                 return AuthResult.FAILURE, "Unknown MAC"
-            if not dev.authorized:
-                return AuthResult.FAILURE, "MAC not authorised"
-            return AuthResult.SUCCESS, ""
+            return AuthResult.FAILURE, "MAC not authorised"
 
     # ---- Session accounting ----
 
@@ -458,9 +568,23 @@ class NACoRadiusServer(pyrad.server.Server):
             elif status in (3, "Interim-Update"):
                 stmt = select(ActiveSession).where(ActiveSession.session_id == session_id)
                 sess = (await db.execute(stmt)).scalar_one_or_none()
-                if sess:
-                    sess.bytes_in  = int((pkt.get("Acct-Input-Octets",  [0])[0]) or 0)
-                    sess.bytes_out = int((pkt.get("Acct-Output-Octets", [0])[0]) or 0)
+                if sess is None:
+                    # Session started before a NACo restart (or the Start was
+                    # lost). Recover it from the Interim-Update so the active-
+                    # sessions view converges instead of staying blind.
+                    mac_raw = pkt.get("Calling-Station-Id", [""])[0]
+                    try:
+                        mac = normalise_mac(mac_raw)
+                    except ValueError:
+                        mac = mac_raw
+                    sess = ActiveSession(
+                        session_id=session_id, username=username,
+                        mac_address=mac, ip_address=ip,
+                        nas_ip=nas_ip, nas_port=nas_port,
+                    )
+                    db.add(sess)
+                sess.bytes_in  = _acct_octets(pkt, "Acct-Input-Octets",  "Acct-Input-Gigawords")
+                sess.bytes_out = _acct_octets(pkt, "Acct-Output-Octets", "Acct-Output-Gigawords")
             try:
                 await db.commit()
             except IntegrityError:
@@ -477,7 +601,7 @@ class NACoRadiusServer(pyrad.server.Server):
 
     async def _apply_policy(
         self, username: str, pkt, method: AuthMethod,
-    ) -> tuple[int | None, AuthResult, str, str]:
+    ) -> tuple[int | None, AuthResult, str, str, dict]:
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
@@ -490,6 +614,7 @@ class NACoRadiusServer(pyrad.server.Server):
 
         group_name  = ""
         device_type = "unknown"
+        has_guest_session = False
 
         async with AsyncSessionLocal() as db:
             if method == AuthMethod.MAB:
@@ -497,11 +622,12 @@ class NACoRadiusServer(pyrad.server.Server):
                 dev = (await db.execute(stmt)).scalar_one_or_none()
                 if dev:
                     device_type = dev.device_type or "unknown"
+                has_guest_session = await _has_active_guest_session(db, mac or username)
             else:
                 stmt = (
                     select(User)
                     .options(selectinload(User.group))
-                    .where(User.username == username, User.enabled == True)
+                    .where(User.username == username, User.enabled)
                 )
                 user = (await db.execute(stmt)).scalar_one_or_none()
                 if user and user.group:
@@ -515,10 +641,50 @@ class NACoRadiusServer(pyrad.server.Server):
             decision = await policy_engine.evaluate(ctx, db)
 
         if decision.action == PolicyAction.PERMIT:
-            return decision.vlan, AuthResult.SUCCESS, "", decision.policy_name
+            return decision.vlan, AuthResult.SUCCESS, "", decision.policy_name, decision.reply_attributes
         if decision.action == PolicyAction.GUEST:
-            return self._cfg.guest_vlan, AuthResult.SUCCESS, "GUEST access", decision.policy_name
-        return None, AuthResult.FAILURE, f"Policy denied: {decision.reason}", decision.policy_name
+            return self._cfg.guest_vlan, AuthResult.SUCCESS, "GUEST access", decision.policy_name, decision.reply_attributes
+        # A MAB request backed by a live captive-portal registration gets the
+        # guest VLAN when no explicit policy matched. An explicit DENY policy
+        # matching above still wins — only the default-deny fallthrough is
+        # softened for registered guests.
+        if (
+            method == AuthMethod.MAB
+            and has_guest_session
+            and decision.policy_name == "DEFAULT_DENY"
+        ):
+            return self._cfg.guest_vlan, AuthResult.SUCCESS, "Captive-portal guest session", "GUEST_SESSION", {}
+        return None, AuthResult.FAILURE, f"Policy denied: {decision.reason}", decision.policy_name, {}
+
+    # ---- Vendor / custom reply attributes ----
+
+    def _attach_reply_attributes(self, reply, attrs: dict, username: str) -> None:
+        """Attach per-policy reply attributes (standard or VSA) to an
+        Access-Accept. Unknown attribute names or bad values are logged and
+        skipped — one bad attribute must not turn an Accept into silence."""
+        for name, raw in (attrs or {}).items():
+            values = raw if isinstance(raw, list) else [raw]
+            for value in values:
+                # JSON can't distinguish "10" from 10 — try the raw value,
+                # then the opposite coercion, before giving up.
+                candidates: list = [value]
+                if isinstance(value, str) and value.lstrip("-").isdigit():
+                    candidates.append(int(value))
+                elif isinstance(value, int):
+                    candidates.append(str(value))
+                last_exc: Exception | None = None
+                for candidate in candidates:
+                    try:
+                        reply.AddAttribute(str(name), candidate)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                else:
+                    log.error(
+                        "Failed to attach reply attribute %s=%r for user=%r: %s "
+                        "— check the name exists in naco/radius/dictionary",
+                        name, value, username, last_exc,
+                    )
 
     # ---- Sync bridge ----
 
@@ -574,10 +740,31 @@ class NACoRadiusServer(pyrad.server.Server):
 # DB helper for NAS client loading
 # ---------------------------------------------------------------------------
 
+async def _has_active_guest_session(db, mac: str) -> bool:
+    """True if *mac* holds an unexpired, active captive-portal guest session."""
+    from sqlalchemy import select
+
+    from naco.core.utils import utcnow
+    from naco.db.models import GuestSession
+
+    if not mac:
+        return False
+    stmt = (
+        select(GuestSession.id)
+        .where(
+            GuestSession.mac_address == mac,
+            GuestSession.active,
+            GuestSession.expires_at > utcnow(),
+        )
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def _load_db_nas_clients() -> list[tuple[str, str]]:
     from sqlalchemy import select
     async with AsyncSessionLocal() as db:
-        stmt = select(NasClient).where(NasClient.enabled == True)
+        stmt = select(NasClient).where(NasClient.enabled)
         clients = (await db.execute(stmt)).scalars().all()
         return [(c.ip_address, c.secret) for c in clients]
 

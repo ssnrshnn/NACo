@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 
 from naco import __version__
 from naco.config import get_config
-from naco.core import bus, Event, EventType, get_logger, setup_logging
+from naco.core import Event, EventType, bus, get_logger, setup_logging
 from naco.db import AsyncSessionLocal, init_db
 
 log = get_logger(__name__)
@@ -84,7 +84,7 @@ async def _seed_database() -> None:
         # reset-password`` and the manual SQL we document in SECURITY.md.
         else:
             sup_count = (await db.execute(
-                select(AdminUser).where(AdminUser.role == AdminRole.SUPERUSER, AdminUser.enabled == True)
+                select(AdminUser).where(AdminUser.role == AdminRole.SUPERUSER, AdminUser.enabled)
             )).scalars().first()
             if sup_count is None:
                 log.warning(
@@ -121,7 +121,7 @@ async def _log_retention_loop() -> None:
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             auth_cutoff  = now - timedelta(days=_LOG_RETENTION_DAYS)
             admin_cutoff = now - timedelta(days=_ADMIN_AUDIT_RETENTION_DAYS)
             async with AsyncSessionLocal() as db:
@@ -146,7 +146,7 @@ async def _stale_session_cleanup_loop() -> None:
 
     while True:
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=_STALE_SESSION_HOURS)
+            cutoff = datetime.now(UTC) - timedelta(hours=_STALE_SESSION_HOURS)
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
                     sa_delete(ActiveSession).where(ActiveSession.updated_at < cutoff)
@@ -185,12 +185,17 @@ async def lifespan(_app: FastAPI):
         "CHANGE_ME_session_secret_32_bytes_hex",
         "CHANGE_ME_api_secret_32_bytes_hex",
         "CHANGE_ME_csrf_secret_32_bytes_hex",
+        "change_me_session_secret", "change_me_api_secret", "change_me_csrf_secret",
     }
+    _insecure_secrets: list[str] = []
     if cfg.server.session_secret in _INSECURE_KEYS:
+        _insecure_secrets.append("server.session_secret")
         log.warning("server.session_secret is set to a placeholder — please change it.")
     if cfg.server.api_secret in _INSECURE_KEYS:
+        _insecure_secrets.append("server.api_secret")
         log.warning("server.api_secret is set to a placeholder — please change it.")
     if cfg.server.csrf_secret in _INSECURE_KEYS:
+        _insecure_secrets.append("server.csrf_secret")
         log.warning("server.csrf_secret is set to a placeholder — please change it.")
 
     _DEFAULT_PASSWORDS = {"NACo@admin1", "admin", "password", "", "CHANGE_ME_initial_admin_password"}
@@ -201,6 +206,15 @@ async def lifespan(_app: FastAPI):
         "tacacs_secret", "testing123", "", "CHANGE_ME_tacacs_default_key"
     ):
         log.warning("TACACS+ key is set to a placeholder — please change it.")
+
+    # Phase 2.4: refuse to start with placeholder secrets in production.
+    if _insecure_secrets and not cfg.server.debug:
+        raise SystemExit(
+            f"FATAL: refusing to start with placeholder secrets in production mode "
+            f"(debug=False). The following secrets must be changed: "
+            f"{', '.join(_insecure_secrets)}. "
+            f"Set server.debug=true to override (development only)."
+        )
 
     await init_db()
     await _seed_database()
@@ -267,8 +281,8 @@ def create_app() -> FastAPI:
     FreeRADIUS REST hooks, and captive portal are layered on top.
     """
     from naco.api.routes import router as api_router
-    from naco.radius.freeradius_routes import router as freeradius_router
     from naco.portal.app import app as portal_app
+    from naco.radius.freeradius_routes import router as freeradius_router
     from naco.web.app import app as web_app
 
     web_app.title       = "NACo"

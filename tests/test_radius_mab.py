@@ -73,7 +73,7 @@ class TestMabPasswordEnforcement:
         path. ``_is_mac_like`` is strict-hex, so ``"zzzz..."`` falls through
         to PAP. The PAP path needs DB access (which we don't have here) so
         we accept any non-MAB outcome — what matters is the dispatch."""
-        pkt = _mab_pkt(server, "zzzzzzzzzzzz", "zzzzzzzzzzzz")
+        _mab_pkt(server, "zzzzzzzzzzzz", "zzzzzzzzzzzz")
         # Drive the dispatch decision only — without a running event loop
         # the PAP path would hang on `_run_sync`, so we patch it out.
         from naco.radius.server import _is_mac_like

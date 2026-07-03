@@ -35,7 +35,6 @@ from contextvars import ContextVar
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-
 # Default value is an empty string so format strings like
 # ``%(request_id)s`` don't blow up when the filter hasn't run yet (e.g.
 # logs emitted during application start-up).
@@ -77,7 +76,7 @@ class RequestIDFilter(logging.Filter):
     Format strings can then reference ``%(request_id)s``.
     """
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
+    def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = get_request_id() or "-"
         return True
 

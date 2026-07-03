@@ -26,17 +26,19 @@ Example rule JSON
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.core.logger import get_logger
-from naco.core.utils import normalise_mac, is_within_time_range, utcnow
+from naco.core.utils import is_within_time_range, normalise_mac, utcnow
 from naco.db.models import Policy, PolicyAction
 
 log = get_logger(__name__)
@@ -66,6 +68,9 @@ class PolicyDecision:
     vlan: int | None
     policy_name: str
     reason: str
+    # Vendor/standard RADIUS attributes to attach to the Access-Accept,
+    # e.g. {"Aruba-User-Role": "employee", "Cisco-AVPair": ["..."]}.
+    reply_attributes: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +139,6 @@ def _string_match(subject: str, op: str, pattern: str) -> bool:
     if op == "endswith":   return s.endswith(p)
     if op == "contains":   return p in s
     if op == "regex":
-        import concurrent.futures
         try:
             # Reject patterns over 256 chars
             if len(pattern) > 256:
@@ -145,11 +149,9 @@ def _string_match(subject: str, op: str, pattern: str) -> bool:
             if re.search(r'\([^)]*[+*][^)]*\)[+*?]', pattern):
                 log.warning("Regex pattern %r contains nested quantifiers (ReDoS risk) — treating as no-match", pattern)
                 return False
-            compiled = re.compile(pattern, re.IGNORECASE)
-            # Run regex with a timeout to prevent catastrophic backtracking
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(compiled.search, subject[:1024])
-                result = future.result(timeout=2.0)
+            compiled = _compile_regex(pattern)
+            future = _regex_executor.submit(compiled.search, subject[:1024])
+            result = future.result(timeout=2.0)
             return bool(result)
         except concurrent.futures.TimeoutError:
             log.warning("Regex pattern %r timed out — treating as no-match", pattern)
@@ -158,6 +160,21 @@ def _string_match(subject: str, op: str, pattern: str) -> bool:
             log.warning("Invalid regex pattern %r in policy condition: %s", pattern, exc)
             return False
     return False
+
+
+# ---------------------------------------------------------------------------
+# Regex helpers — module-level executor + compiled pattern cache
+# ---------------------------------------------------------------------------
+
+_regex_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="naco-regex"
+)
+
+
+@lru_cache(maxsize=256)
+def _compile_regex(pattern: str) -> re.Pattern:
+    """Compile and cache regex patterns used in policy conditions."""
+    return re.compile(pattern, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +196,7 @@ class PolicyEngine:
         """
         stmt = (
             select(Policy)
-            .where(Policy.enabled == True)
+            .where(Policy.enabled)
             .order_by(Policy.priority.asc())
         )
         result = await db.execute(stmt)
@@ -187,7 +204,11 @@ class PolicyEngine:
 
         for policy in policies:
             try:
-                conditions: list[dict] = json.loads(policy.conditions or "[]")
+                raw = policy.conditions
+                if isinstance(raw, str):
+                    conditions: list[dict] = json.loads(raw or "[]")
+                else:
+                    conditions = raw if raw else []
             except (json.JSONDecodeError, TypeError):
                 log.warning("Policy %r has invalid conditions JSON — skipping", policy.name)
                 continue
@@ -203,6 +224,7 @@ class PolicyEngine:
                     vlan=policy.vlan,
                     policy_name=policy.name,
                     reason=f"Matched policy: {policy.name}",
+                    reply_attributes=_parse_reply_attributes(policy),
                 )
 
         # No rule matched → default deny
@@ -213,6 +235,21 @@ class PolicyEngine:
             policy_name="DEFAULT_DENY",
             reason="No matching policy found",
         )
+
+
+def _parse_reply_attributes(policy: Policy) -> dict[str, Any]:
+    """Normalise ``Policy.reply_attributes`` to a dict (JSONB dict on
+    Postgres, JSON-as-text on SQLite, or NULL)."""
+    raw = getattr(policy, "reply_attributes", None)
+    if not raw:
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            log.warning("Policy %r has invalid reply_attributes JSON — ignoring", policy.name)
+            return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _matches_all(conditions: list[dict], ctx: AuthContext) -> bool:

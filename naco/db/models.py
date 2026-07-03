@@ -5,12 +5,21 @@ Full SQLAlchemy ORM models covering every entity in the system.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum as PyEnum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text,
-    func, text,
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,20 +27,20 @@ from naco.db.database import Base
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
 
-class AuthResult(str, PyEnum):
+class AuthResult(StrEnum):
     SUCCESS = "SUCCESS"
     FAILURE = "FAILURE"
     CHALLENGE = "CHALLENGE"
 
 
-class AuthMethod(str, PyEnum):
+class AuthMethod(StrEnum):
     PAP       = "PAP"
     CHAP      = "CHAP"
     PEAP      = "PEAP"
@@ -41,19 +50,19 @@ class AuthMethod(str, PyEnum):
     PAP_CHAP  = "PAP/CHAP"
 
 
-class PolicyAction(str, PyEnum):
+class PolicyAction(StrEnum):
     PERMIT = "PERMIT"
     DENY   = "DENY"
     GUEST  = "GUEST"
 
 
-class TacacsPacketType(str, PyEnum):
+class TacacsPacketType(StrEnum):
     AUTHEN = "AUTHEN"
     AUTHOR = "AUTHOR"
     ACCTING = "ACCTING"
 
 
-class AdminRole(str, PyEnum):
+class AdminRole(StrEnum):
     """Role-based access control for admin accounts.
 
     Roles are ordered: a route that requires ``OPERATOR`` is satisfied by an
@@ -90,9 +99,9 @@ class Group(Base):
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
 
-    users: Mapped[list["User"]] = relationship("User", back_populates="group")
-    policies: Mapped[list["Policy"]] = relationship("Policy", back_populates="group")
-    command_set: Mapped["CommandSet | None"] = relationship("CommandSet", back_populates="groups")
+    users: Mapped[list[User]] = relationship("User", back_populates="group")
+    policies: Mapped[list[Policy]] = relationship("Policy", back_populates="group")
+    command_set: Mapped[CommandSet | None] = relationship("CommandSet", back_populates="groups")
 
 
 class User(Base):
@@ -110,9 +119,13 @@ class User(Base):
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+        server_default=func.now(), nullable=True,
+    )
 
-    group: Mapped["Group | None"] = relationship("Group", back_populates="users")
-    auth_logs: Mapped[list["AuthLog"]] = relationship("AuthLog", back_populates="user")
+    group: Mapped[Group | None] = relationship("Group", back_populates="users")
+    auth_logs: Mapped[list[AuthLog]] = relationship("AuthLog", back_populates="user")
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +154,7 @@ class Device(Base):
     )
     notes: Mapped[str]          = mapped_column(Text, default="")
 
-    auth_logs: Mapped[list["AuthLog"]] = relationship("AuthLog", back_populates="device")
+    auth_logs: Mapped[list[AuthLog]] = relationship("AuthLog", back_populates="device")
 
 
 # ---------------------------------------------------------------------------
@@ -170,18 +183,26 @@ class Policy(Base):
     name: Mapped[str]         = mapped_column(String(128), unique=True, nullable=False)
     description: Mapped[str]  = mapped_column(String(512), default="")
     priority: Mapped[int]     = mapped_column(Integer, default=100)
-    conditions: Mapped[str]   = mapped_column(Text, default="[]")  # JSON
+    conditions: Mapped[str]   = mapped_column(JSON, default=list)  # JSONB on Postgres, JSON-as-text on SQLite
     action: Mapped[str]       = mapped_column(
         Enum(PolicyAction), default=PolicyAction.PERMIT, nullable=False
     )
     vlan: Mapped[int | None]  = mapped_column(Integer, nullable=True)
+    # Extra RADIUS attributes for the Access-Accept, e.g.
+    # {"Aruba-User-Role": "employee", "Cisco-AVPair": ["url-redirect=..."]}.
+    # Names must exist in naco/radius/dictionary; values are str/int or lists.
+    reply_attributes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     group_id: Mapped[int | None] = mapped_column(ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)
     enabled: Mapped[bool]     = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+        server_default=func.now(), nullable=True,
+    )
 
-    group: Mapped["Group | None"] = relationship("Group", back_populates="policies")
+    group: Mapped[Group | None] = relationship("Group", back_populates="policies")
 
     __table_args__ = (
         CheckConstraint("vlan IS NULL OR (vlan >= 1 AND vlan <= 4094)", name="ck_policy_vlan_range"),
@@ -214,8 +235,8 @@ class AuthLog(Base):
     user_id: Mapped[int | None]   = mapped_column(ForeignKey("users.id"), nullable=True)
     device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), nullable=True)
 
-    user:   Mapped["User | None"]   = relationship("User",   back_populates="auth_logs")
-    device: Mapped["Device | None"] = relationship("Device", back_populates="auth_logs")
+    user:   Mapped[User | None]   = relationship("User",   back_populates="auth_logs")
+    device: Mapped[Device | None] = relationship("Device", back_populates="auth_logs")
 
 
 # ---------------------------------------------------------------------------
@@ -240,8 +261,9 @@ class ActiveSession(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
         server_default=func.now(),
     )
-    bytes_in: Mapped[int]        = mapped_column(Integer, default=0)
-    bytes_out: Mapped[int]       = mapped_column(Integer, default=0)
+    # BigInteger: RFC 2869 Gigawords roll 32-bit octet counters past 4 GiB.
+    bytes_in: Mapped[int]        = mapped_column(BigInteger, default=0)
+    bytes_out: Mapped[int]       = mapped_column(BigInteger, default=0)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +339,10 @@ class AdminUser(Base):
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+        server_default=func.now(), nullable=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +361,10 @@ class NasClient(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+        server_default=func.now(), nullable=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +382,10 @@ class TacacsClient(Base):
     enabled: Mapped[bool]     = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+        server_default=func.now(), nullable=True,
     )
 
 
@@ -379,7 +413,7 @@ class VlanMapping(Base):
 # TACACS+ Command Sets
 # ---------------------------------------------------------------------------
 
-class CommandRuleAction(str, PyEnum):
+class CommandRuleAction(StrEnum):
     PERMIT = "PERMIT"
     DENY   = "DENY"
 
@@ -394,11 +428,11 @@ class CommandSet(Base):
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )
 
-    rules: Mapped[list["CommandRule"]] = relationship(
+    rules: Mapped[list[CommandRule]] = relationship(
         "CommandRule", back_populates="command_set",
         cascade="all, delete-orphan", order_by="CommandRule.priority",
     )
-    groups: Mapped[list["Group"]] = relationship("Group", back_populates="command_set")
+    groups: Mapped[list[Group]] = relationship("Group", back_populates="command_set")
 
 
 class CommandRule(Base):
@@ -420,7 +454,7 @@ class CommandRule(Base):
     command_pattern: Mapped[str] = mapped_column(String(256), nullable=False)
     args_pattern: Mapped[str]    = mapped_column(String(256), default="")
 
-    command_set: Mapped["CommandSet"] = relationship("CommandSet", back_populates="rules")
+    command_set: Mapped[CommandSet] = relationship("CommandSet", back_populates="rules")
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 
 from naco.config import get_config
-from naco.core.events import bus, Event, EventType
+from naco.core.events import Event, EventType, bus
 from naco.core.logger import get_logger
 from naco.core.utils import normalise_mac
 from naco.db.database import AsyncSessionLocal
@@ -178,7 +178,7 @@ class DeviceProfiler:
 
     def _sniff_loop(self) -> None:
         try:
-            from scapy.all import sniff, DHCP, ARP, Ether, IP
+            from scapy.all import sniff
         except ImportError:
             log.warning("Scapy not available — device profiler disabled. Install scapy.")
             return
@@ -209,7 +209,7 @@ class DeviceProfiler:
 
     def _process_packet(self, pkt) -> None:
         try:
-            from scapy.all import DHCP, Ether, ARP
+            from scapy.all import ARP, DHCP
             if pkt.haslayer(DHCP):
                 self._process_dhcp(pkt)
             elif pkt.haslayer(ARP):
@@ -218,14 +218,14 @@ class DeviceProfiler:
             log.debug("Profiler packet error: %s", exc)
 
     def _process_dhcp(self, pkt) -> None:
-        from scapy.all import Ether, BOOTP, DHCP
+        from scapy.all import BOOTP, DHCP, Ether
         mac        = pkt[Ether].src
         options    = {opt[0]: opt[1] for opt in pkt[DHCP].options if isinstance(opt, tuple)}
 
         hostname   = (options.get("hostname", b"") or b"").decode("utf-8", errors="replace")
         vendor_cls = (options.get("vendor_class_id", b"") or b"").decode("utf-8", errors="replace")
         param_list = options.get("param_req_list", b"")
-        if isinstance(param_list, (bytes, bytearray)):
+        if isinstance(param_list, bytes | bytearray):
             dhcp_fp = ",".join(str(b) for b in param_list)
         else:
             dhcp_fp = ""

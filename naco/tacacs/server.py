@@ -24,21 +24,25 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
-import logging
 import struct
 from dataclasses import dataclass
-from typing import Any
 
 from naco.config import get_config
-from naco.core.events import bus, Event, EventType
+from naco.core.events import Event, EventType, bus
 from naco.core.logger import get_logger
 from naco.db.database import AsyncSessionLocal
 from naco.db.models import (
-    TacacsClient, TacacsLog, TacacsPacketType, PolicyAction, User, CommandRuleAction,
-    Group, CommandSet, CommandRule,
+    CommandRuleAction,
+    CommandSet,
+    Group,
+    PolicyAction,
+    TacacsClient,
+    TacacsLog,
+    TacacsPacketType,
+    User,
 )
-from naco.policy.engine import AuthContext, engine as policy_engine
+from naco.policy.engine import AuthContext
+from naco.policy.engine import engine as policy_engine
 
 log = get_logger(__name__)
 
@@ -113,7 +117,7 @@ def _md5_pad(key: bytes, session_id: int, version: int, seq_no: int, length: int
 
 def _crypt(body: bytes, key: bytes, session_id: int, version: int, seq_no: int) -> bytes:
     pad = _md5_pad(key, session_id, version, seq_no, len(body))
-    return bytes(a ^ b for a, b in zip(body, pad))
+    return bytes(a ^ b for a, b in zip(body, pad, strict=False))
 
 
 @dataclass
@@ -126,7 +130,7 @@ class TacacsHeader:
     length:     int
 
     @classmethod
-    def decode(cls, raw: bytes) -> "TacacsHeader":
+    def decode(cls, raw: bytes) -> TacacsHeader:
         version, pkt_type, seq_no, flags = struct.unpack("!BBBB", raw[0:4])
         session_id, length = struct.unpack("!II", raw[4:12])
         return cls(version, pkt_type, seq_no, flags, session_id, length)
@@ -250,7 +254,7 @@ class TacacsSession:
             await self._send_authen_reply(hdr, TAC_PLUS_AUTHEN_STATUS_ERROR, "Bad packet")
             return
 
-        action, priv_lvl, authen_type, authen_svc = struct.unpack("!BBBB", body[0:4])
+        _action, _priv_lvl, authen_type, _authen_svc = struct.unpack("!BBBB", body[0:4])
         user_len, port_len, rem_addr_len, data_len = struct.unpack("!BBBB", body[4:8])
 
         expected = 8 + user_len + port_len + rem_addr_len + data_len
@@ -261,7 +265,7 @@ class TacacsSession:
 
         offset = 8
         username  = body[offset:offset + user_len].decode("utf-8", errors="replace"); offset += user_len
-        port      = body[offset:offset + port_len].decode("utf-8", errors="replace"); offset += port_len
+        body[offset:offset + port_len].decode("utf-8", errors="replace"); offset += port_len
         rem_addr  = body[offset:offset + rem_addr_len].decode("utf-8", errors="replace"); offset += rem_addr_len
         data      = body[offset:offset + data_len]; offset += data_len
 
@@ -367,7 +371,7 @@ class TacacsSession:
             await self._send_author_reply(hdr, TAC_PLUS_AUTHOR_STATUS_ERROR, [])
             return
 
-        authen_method, priv_lvl, authen_type, authen_svc = struct.unpack("!BBBB", body[0:4])
+        _authen_method, priv_lvl, _authen_type, _authen_svc = struct.unpack("!BBBB", body[0:4])
         user_len, port_len, rem_addr_len, arg_cnt       = struct.unpack("!BBBB", body[4:8])
 
         offset = 8
@@ -382,7 +386,7 @@ class TacacsSession:
             await self._send_author_reply(hdr, TAC_PLUS_AUTHOR_STATUS_ERROR, [])
             return
         username = body[offset:offset + user_len].decode("utf-8", errors="replace"); offset += user_len
-        port     = body[offset:offset + port_len].decode("utf-8", errors="replace"); offset += port_len
+        body[offset:offset + port_len].decode("utf-8", errors="replace"); offset += port_len
         rem_addr = body[offset:offset + rem_addr_len].decode("utf-8", errors="replace"); offset += rem_addr_len
 
         args: list[str] = []
@@ -428,7 +432,7 @@ class TacacsSession:
             await self._send_acct_reply(hdr, TAC_PLUS_ACCT_STATUS_ERROR)
             return
 
-        flags, authen_method, priv_lvl, authen_type, authen_svc = struct.unpack("!BBBBB", body[0:5])
+        flags, _authen_method, priv_lvl, _authen_type, _authen_svc = struct.unpack("!BBBBB", body[0:5])
         user_len, port_len, rem_addr_len, arg_cnt                = struct.unpack("!BBBB", body[5:9])
 
         offset = 9
@@ -443,7 +447,7 @@ class TacacsSession:
             await self._send_acct_reply(hdr, TAC_PLUS_ACCT_STATUS_ERROR)
             return
         username = body[offset:offset + user_len].decode("utf-8", errors="replace"); offset += user_len
-        port     = body[offset:offset + port_len].decode("utf-8", errors="replace"); offset += port_len
+        body[offset:offset + port_len].decode("utf-8", errors="replace"); offset += port_len
         rem_addr = body[offset:offset + rem_addr_len].decode("utf-8", errors="replace"); offset += rem_addr_len
 
         args: list[str] = []
@@ -520,21 +524,20 @@ async def _verify_user(username: str, password: str) -> bool:
     DB has no record — once an LDAP-authenticated user has been
     auto-provisioned, subsequent logins follow the local-bcrypt path.
     """
-    import bcrypt
-    from naco.api.auth import dummy_verify
+    from naco.api.auth import dummy_verify_async, verify_password_async
 
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select
-        stmt = select(User).where(User.username == username, User.enabled == True)
+        stmt = select(User).where(User.username == username, User.enabled)
         user = (await db.execute(stmt)).scalar_one_or_none()
         if user is not None:
-            return bcrypt.checkpw(password.encode(), user.password_hash.encode())
+            return await verify_password_async(password, user.password_hash)
 
         # User not found locally → spend the bcrypt cost on a constant hash
         # so a probe for an unknown user takes the same wall time as one
         # for a known user. Then try LDAP, which has its own (much longer)
         # network latency floor so timing here doesn't matter.
-        dummy_verify(password)
+        await dummy_verify_async(password)
 
         from naco.auth.ldap import ldap_authenticate, ldap_auto_provision
         ldap_result = await ldap_authenticate(username, password)
@@ -563,7 +566,7 @@ async def _is_user_authorized(username: str, priv_lvl: int, command: str, nas_ip
                 .selectinload(Group.command_set)
                 .selectinload(CommandSet.rules)
             )
-            .where(User.username == username, User.enabled == True)
+            .where(User.username == username, User.enabled)
         )
         user = (await db.execute(stmt)).scalar_one_or_none()
         if user is None:
@@ -650,7 +653,7 @@ async def run_tacacs_server() -> None:
             try:
                 async with AsyncSessionLocal() as db:
                     rows = (await db.execute(
-                        sa_select(TacacsClient).where(TacacsClient.enabled == True)
+                        sa_select(TacacsClient).where(TacacsClient.enabled)
                     )).scalars().all()
                     for row in rows:
                         ip = row.ip_address

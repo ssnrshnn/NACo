@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}NACo{% endblock %} — Admin</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/css/style.css">
@@ -14,14 +16,10 @@
 <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
 <div class="d-flex">
   <nav class="sidebar d-flex flex-column p-3">
-    <div class="sidebar-brand mb-4">
-      <svg width="28" height="28" viewBox="0 0 52 52" fill="none" class="me-2">
-        <circle cx="26" cy="26" r="25" stroke="#0dcaf0" stroke-width="2"/>
-        <path d="M14 26 Q26 10 38 26 Q26 42 14 26Z" fill="none" stroke="#0dcaf0" stroke-width="1.5"/>
-        <circle cx="26" cy="26" r="4" fill="#0dcaf0"/>
-      </svg>
-      <span class="fw-bold text-info fs-5">NACo</span>
-    </div>
+    <a href="/" class="sidebar-brand mb-4 text-decoration-none">
+      <img src="/static/img/logo-128.png" alt="NACo" width="32" height="32" class="me-2 brand-logo">
+      <span class="fw-bold fs-5 brand-text">NACo</span>
+    </a>
 
     <ul class="nav nav-pills flex-column gap-1 mb-auto">
       <li class="nav-section-label">Overview</li>
@@ -40,8 +38,7 @@
       <li><a href="/command-sets" class="nav-link {% if '/command-sets' in request.url.path %}active{% endif %}"><i class="bi bi-list-check me-2"></i>Command Sets</a></li>
 
       <li class="nav-section-label mt-2">Monitoring</li>
-      <li><a href="/logs"     class="nav-link {% if request.url.path == '/logs' %}active{% endif %}"><i class="bi bi-journal-text me-2"></i>Auth Logs</a></li>
-      <li><a href="/logs/tacacs" class="nav-link {% if '/logs/tacacs' in request.url.path %}active{% endif %}"><i class="bi bi-journal-code me-2"></i>TACACS+ Logs</a></li>
+      <li><a href="/logs"     class="nav-link {% if '/logs' in request.url.path %}active{% endif %}"><i class="bi bi-journal-text me-2"></i>Logs</a></li>
       <li><a href="/sessions" class="nav-link {% if '/sessions' in request.url.path %}active{% endif %}"><i class="bi bi-activity me-2"></i>Sessions</a></li>
       <li><a href="/guests"   class="nav-link {% if '/guests'   in request.url.path %}active{% endif %}"><i class="bi bi-person-badge me-2"></i>Guests</a></li>
 

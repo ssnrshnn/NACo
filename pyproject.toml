@@ -23,9 +23,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage      = "https://github.com/your-org/naco"
-Documentation = "https://github.com/your-org/naco#readme"
-Issues        = "https://github.com/your-org/naco/issues"
+Homepage      = "https://github.com/ssnrshnn/naco"
+Documentation = "https://github.com/ssnrshnn/naco#readme"
+Issues        = "https://github.com/ssnrshnn/naco/issues"
 
 [project.scripts]
 naco    = "naco.main:main"
@@ -71,8 +71,20 @@ line-length = 110
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "S", "C4", "RUF"]
-ignore = ["E501", "S101", "S104", "S105", "S106", "S603", "S607", "B008"]
+select = ["E", "F", "I", "B", "UP", "S", "C4", "RUF", "E712"]
+# Pragmatic ignores for AAA / network codebases:
+#   RUF002/RUF003 — EN-dash and similar in docstrings/comments (technical prose).
+#   E701/E702     — one-line compound statements in crypto / packet helpers.
+#   S110          — intentional ``except Exception: pass`` (best-effort paths).
+#   E402          — late imports (optional deps, circular import avoidance).
+#   S324          — MD5/SHA1 used by RADIUS/TACACS wire formats, not TLS.
+#   S310          — ``urllib.request`` patterns audited elsewhere.
+#   B904          — ``raise HTTPException`` from handlers without chaining.
+#   RUF012        — SQLAlchemy declarative patterns with mutable defaults.
+ignore = [
+    "E501", "S101", "S104", "S105", "S106", "S603", "S607", "B008",
+    "RUF002", "RUF003", "E701", "E702", "S110", "E402", "S324", "S310", "B904", "RUF012",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S", "B"]

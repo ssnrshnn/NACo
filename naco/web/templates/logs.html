@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block page_title %}Centralized Logs{% endblock %}
+
+{% block content %}
+<!-- Tab navigation -->
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'all' %}active{% endif %}" href="/logs?tab=all">
+      <i class="bi bi-list-ul me-1"></i>All
+      <span class="badge bg-secondary ms-1">{{ total_all }}</span>
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'auth' %}active{% endif %}" href="/logs?tab=auth">
+      <i class="bi bi-wifi me-1"></i>RADIUS / Auth
+      <span class="badge bg-secondary ms-1">{{ total_auth }}</span>
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if tab == 'tacacs' %}active{% endif %}" href="/logs?tab=tacacs">
+      <i class="bi bi-terminal me-1"></i>TACACS+
+      <span class="badge bg-secondary ms-1">{{ total_tacacs }}</span>
+    </a>
+  </li>
+</ul>
+
+<!-- Filter bar -->
+<div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+  <span class="text-muted small me-1">Result:</span>
+  <a href="/logs?tab={{ tab }}" class="btn btn-sm {% if not filter_result %}btn-secondary{% else %}btn-outline-secondary{% endif %}">All</a>
+  <a href="/logs?tab={{ tab }}&result=SUCCESS" class="btn btn-sm {% if filter_result == 'SUCCESS' %}btn-success{% else %}btn-outline-success{% endif %}">Success</a>
+  <a href="/logs?tab={{ tab }}&result=FAILURE" class="btn btn-sm {% if filter_result == 'FAILURE' %}btn-danger{% else %}btn-outline-danger{% endif %}">Failure</a>
+  <span class="ms-auto text-muted small">{{ total }} matching events</span>
+</div>
+
+<!-- ── ALL tab ─────────────────────────────────────────────────────────── -->
+{% if tab == 'all' %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0 small align-middle">
+      <thead class="table-secondary">
+        <tr>
+          <th style="width:155px">Timestamp</th>
+          <th style="width:80px">Source</th>
+          <th>Username</th>
+          <th>Detail</th>
+          <th style="width:80px">Method</th>
+          <th style="width:70px" class="text-center">Result</th>
+          <th>Info</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in logs %}
+        <tr>
+          <td class="text-muted font-monospace">{{ entry.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td>
+            {% if entry._source == 'auth' %}
+              <span class="badge bg-info-subtle text-info border border-info-subtle">RADIUS</span>
+            {% else %}
+              <span class="badge bg-warning-subtle text-warning border border-warning-subtle">TACACS+</span>
+            {% endif %}
+          </td>
+          <td class="font-monospace">{{ entry.username or '—' }}</td>
+          <td class="font-monospace small text-muted">
+            {% if entry._source == 'auth' %}
+              {{ entry.mac_address or '' }}{% if entry.mac_address and entry.nas_ip %} · {% endif %}{{ entry.nas_ip or '' }}
+            {% else %}
+              {{ entry.remote_ip or '' }}{% if entry.remote_ip and entry.command %} · {% endif %}<span class="text-truncate d-inline-block" style="max-width:180px;vertical-align:bottom" title="{{ entry.command }}">{{ entry.command or '' }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if entry._source == 'auth' %}
+              <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">{{ entry.auth_method }}</span>
+            {% else %}
+              {% if entry.packet_type.value == 'AUTHEN' %}<span class="badge bg-primary-subtle text-primary border border-primary-subtle">AUTH</span>
+              {% elif entry.packet_type.value == 'AUTHOR' %}<span class="badge bg-warning-subtle text-warning border border-warning-subtle">AUTHZ</span>
+              {% else %}<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">ACCT</span>{% endif %}
+            {% endif %}
+          </td>
+          <td class="text-center">
+            {% if entry._source == 'auth' %}
+              {% if entry.result == 'SUCCESS' %}<span class="badge bg-success">Allow</span>
+              {% else %}<span class="badge bg-danger">Deny</span>{% endif %}
+            {% else %}
+              {% if entry.result in ('PASS', 'SUCCESS', 'LOGGED') %}<span class="badge bg-success">{{ entry.result }}</span>
+              {% else %}<span class="badge bg-danger">{{ entry.result }}</span>{% endif %}
+            {% endif %}
+          </td>
+          <td class="text-muted small">
+            {% if entry._source == 'auth' %}
+              {{ entry.policy_name or entry.reason or '—' }}{% if entry.vlan %} · VLAN {{ entry.vlan }}{% endif %}
+            {% else %}
+              {% if entry.privilege_level %}Priv {{ entry.privilege_level }}{% endif %}
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">No log events found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "logs_pagination.html" %}
+</div>
+
+<!-- ── AUTH tab ────────────────────────────────────────────────────────── -->
+{% elif tab == 'auth' %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0 small align-middle">
+      <thead class="table-secondary">
+        <tr>
+          <th style="width:155px">Timestamp</th>
+          <th>Username</th>
+          <th>MAC</th>
+          <th>NAS IP</th>
+          <th style="width:80px">Method</th>
+          <th style="width:70px" class="text-center">Result</th>
+          <th>Policy</th>
+          <th>VLAN</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in logs %}
+        <tr>
+          <td class="text-muted font-monospace">{{ entry.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td class="font-monospace">{{ entry.username or '—' }}</td>
+          <td class="font-monospace small">{{ entry.mac_address or '—' }}</td>
+          <td class="font-monospace small">{{ entry.nas_ip or '—' }}</td>
+          <td><span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">{{ entry.auth_method }}</span></td>
+          <td class="text-center">
+            {% if entry.result == 'SUCCESS' %}<span class="badge bg-success">Allow</span>
+            {% else %}<span class="badge bg-danger">Deny</span>{% endif %}
+          </td>
+          <td class="text-muted small">{{ entry.policy_name or '—' }}</td>
+          <td class="text-muted">{{ entry.vlan or '—' }}</td>
+          <td class="text-muted small">{{ entry.reason or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="text-center text-muted py-4">No authentication events.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "logs_pagination.html" %}
+</div>
+
+<!-- ── TACACS+ tab ────────────────────────────────────────────────────── -->
+{% elif tab == 'tacacs' %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0 small align-middle">
+      <thead class="table-secondary">
+        <tr>
+          <th style="width:155px">Timestamp</th>
+          <th style="width:80px">Type</th>
+          <th>Username</th>
+          <th>Remote IP</th>
+          <th>Command</th>
+          <th class="text-center" style="width:60px">Priv</th>
+          <th style="width:70px" class="text-center">Result</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in logs %}
+        <tr>
+          <td class="text-muted font-monospace">{{ entry.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td>
+            {% if entry.packet_type.value == 'AUTHEN' %}<span class="badge bg-primary-subtle text-primary border border-primary-subtle">AUTH</span>
+            {% elif entry.packet_type.value == 'AUTHOR' %}<span class="badge bg-warning-subtle text-warning border border-warning-subtle">AUTHZ</span>
+            {% else %}<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">ACCT</span>{% endif %}
+          </td>
+          <td class="font-monospace">{{ entry.username or '—' }}</td>
+          <td class="font-monospace small text-muted">{{ entry.remote_ip or '—' }}</td>
+          <td class="font-monospace small text-truncate" style="max-width:260px" title="{{ entry.command }}">{{ entry.command or '—' }}</td>
+          <td class="text-center"><span class="badge bg-secondary">{{ entry.privilege_level }}</span></td>
+          <td class="text-center">
+            {% if entry.result in ('PASS', 'SUCCESS', 'LOGGED') %}<span class="badge bg-success">{{ entry.result }}</span>
+            {% else %}<span class="badge bg-danger">{{ entry.result }}</span>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">No TACACS+ log entries.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "logs_pagination.html" %}
+</div>
+{% endif %}
+{% endblock %}

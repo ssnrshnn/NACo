@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from naco.api.auth import create_access_token, hash_password
 from naco.db.models import AdminRole, AdminUser
 
-
 # ---------------------------------------------------------------------------
 # Helpers: seed admins at each role and mint a bearer token for them.
 # ---------------------------------------------------------------------------
@@ -123,7 +122,7 @@ class TestViewerRole:
     async def test_viewer_cannot_read_audit_log(self, client: AsyncClient, viewer_token: str):
         # Audit log is OPERATOR-gated — VIEWER must be refused.
         resp = await client.get(
-            "/api/v1/logs/admin-audit",
+            "/api/v1/logs/audit",
             headers={"Authorization": f"Bearer {viewer_token}"},
         )
         assert resp.status_code == 403, resp.text
@@ -145,7 +144,7 @@ class TestOperatorRole:
 
     async def test_operator_can_list_audit_log(self, client: AsyncClient, operator_token: str):
         resp = await client.get(
-            "/api/v1/logs/admin-audit",
+            "/api/v1/logs/audit",
             headers={"Authorization": f"Bearer {operator_token}"},
         )
         assert resp.status_code == 200

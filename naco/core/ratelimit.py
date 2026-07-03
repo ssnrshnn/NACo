@@ -35,7 +35,6 @@ from threading import Lock as _Lock
 
 from naco.core.cache import get_sync_redis
 
-
 # ──────────────────────────────────────────────────────────────────────────
 # Tunables
 # ──────────────────────────────────────────────────────────────────────────
@@ -332,6 +331,20 @@ def reset_all() -> None:
     """Best-effort reset used in tests."""
     _reset_all_local()
     try:
-        asyncio.get_event_loop().run_until_complete(_reset_all_redis())
-    except Exception:
-        pass
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop — drive the Redis cleanup to completion here.
+        try:
+            asyncio.run(_reset_all_redis())
+        except Exception:
+            pass
+    else:
+        # Called from within a running loop (async test context): schedule it
+        # fire-and-forget. run_until_complete would raise and leave the
+        # coroutine unawaited. Hold a module-level reference so the task
+        # isn't garbage-collected mid-flight.
+        global _reset_task
+        _reset_task = asyncio.ensure_future(_reset_all_redis())
+
+
+_reset_task: asyncio.Future | None = None

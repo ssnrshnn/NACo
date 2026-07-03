@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from naco.api.auth import hash_password, verify_password, create_access_token
+from naco.api.auth import create_access_token, hash_password, verify_password
 from naco.db.models import AdminUser
-
 
 # ---------------------------------------------------------------------------
 # Password hashing
@@ -120,7 +118,7 @@ class TestUserCRUD:
             },
         )
         assert resp.status_code == 201
-        uid = resp.json()["id"]
+        resp.json()["id"]
 
         # Get list — should include our new user
         resp = await client.get("/api/v1/users", headers=headers)

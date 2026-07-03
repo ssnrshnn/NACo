@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from typing import Any
 
 from naco.config import get_config
@@ -37,10 +38,7 @@ async def ldap_authenticate(username: str, password: str) -> dict[str, Any] | No
     if not cfg.enabled:
         return None
 
-    try:
-        import ldap3
-        from ldap3 import Server, Connection, SUBTREE, ALL_ATTRIBUTES
-    except ImportError:
+    if importlib.util.find_spec("ldap3") is None:
         log.warning("ldap3 package not installed — LDAP auth unavailable (pip install ldap3)")
         return None
 
@@ -50,7 +48,7 @@ async def ldap_authenticate(username: str, password: str) -> dict[str, Any] | No
 
 def _ldap_auth_sync(cfg, username: str, password: str) -> dict[str, Any] | None:
     import ldap3
-    from ldap3 import Server, Connection, SUBTREE, ALL_ATTRIBUTES
+    from ldap3 import ALL_ATTRIBUTES, SUBTREE, Connection, Server
 
     try:
         server = Server(cfg.server, port=cfg.port, use_ssl=cfg.use_ssl, get_info=ldap3.NONE)
@@ -117,10 +115,12 @@ async def ldap_auto_provision(
     Create or update a local User record based on LDAP auth result.
     Maps the first matching LDAP group to a NACo group.
     """
-    from sqlalchemy import select
-    from naco.db.models import Group, User
-    from naco.api.auth import hash_password
     import secrets
+
+    from sqlalchemy import select
+
+    from naco.api.auth import hash_password
+    from naco.db.models import Group, User
 
     user = (await db.execute(
         select(User).where(User.username == username)

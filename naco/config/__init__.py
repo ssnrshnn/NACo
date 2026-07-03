@@ -14,7 +14,6 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Pydantic models — every section of config.yaml has a typed model
 # ---------------------------------------------------------------------------
@@ -95,17 +94,6 @@ class ServerConfig(BaseModel):
     debug: bool = False
     log_level: str = "INFO"
     log_file: str = "/var/log/naco/naco.log"
-
-    # ------------------------------------------------------------------
-    # Legacy compatibility shims — historically the project used
-    # `server.secret_key` and split listener ports.  Code that still
-    # references those attributes keeps working.
-    # ------------------------------------------------------------------
-
-    @property
-    def secret_key(self) -> str:  # noqa: D401 — pydantic property
-        """Back-compat: prefer `session_secret`."""
-        return self.session_secret
 
 
 class LogSyslogConfig(BaseModel):
@@ -202,52 +190,6 @@ class AppConfig(BaseModel):
     ldap: LdapConfig = Field(default_factory=LdapConfig)
     event_webhooks: list[EventWebhookTarget] = []
     security: SecurityConfig = Field(default_factory=SecurityConfig)
-
-    # ------------------------------------------------------------------
-    # Back-compat shims for code that still references `cfg.web.*` /
-    # `cfg.api.*` / `cfg.portal.host` / `cfg.portal.port`.  These will be
-    # cleaned up as the call-sites are migrated to `cfg.server.*`.
-    # ------------------------------------------------------------------
-
-    @property
-    def web(self) -> "_LegacyWebView":
-        return _LegacyWebView(self.server)
-
-    @property
-    def api(self) -> "_LegacyApiView":
-        return _LegacyApiView(self.server)
-
-
-class _LegacyWebView:
-    """Tiny adapter so `cfg.web.admin_username` etc. still work."""
-
-    __slots__ = ("_s",)
-
-    def __init__(self, server: ServerConfig) -> None:
-        self._s = server
-
-    @property
-    def host(self) -> str: return self._s.host
-    @property
-    def port(self) -> int: return self._s.port
-    @property
-    def admin_username(self) -> str: return self._s.admin_username
-    @property
-    def admin_password(self) -> str: return self._s.admin_password
-
-
-class _LegacyApiView:
-    __slots__ = ("_s",)
-
-    def __init__(self, server: ServerConfig) -> None:
-        self._s = server
-
-    @property
-    def host(self) -> str: return self._s.host
-    @property
-    def port(self) -> int: return self._s.port
-    @property
-    def token_expire_minutes(self) -> int: return self._s.token_expire_minutes
 
 
 # ---------------------------------------------------------------------------

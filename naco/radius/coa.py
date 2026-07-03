@@ -162,7 +162,7 @@ async def send_disconnect_request(
                 loop.sock_recv(sock, 4096),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("Disconnect-Request to %s timed out after %.1fs", nas_ip, timeout)
             return {"success": False, "code": 0, "message": f"Timeout — NAS {nas_ip} did not respond"}
 

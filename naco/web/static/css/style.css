@@ -33,6 +33,16 @@
   display: flex;
   align-items: center;
 }
+.brand-logo {
+  border-radius: 8px;
+  box-shadow: 0 0 12px rgba(13, 202, 240, 0.35);
+}
+.brand-text {
+  background: linear-gradient(90deg, #38bdf8, #34d399);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 
 .sidebar .nav-link {
   color: rgba(255,255,255,0.6);

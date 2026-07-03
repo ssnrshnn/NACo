@@ -1,8 +1,8 @@
 """Phase 0.3 — TOTP enrollment secret stored server-side; verify uses JSON body only."""
 from __future__ import annotations
 
-import pytest
 import pyotp
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

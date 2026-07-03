@@ -54,3 +54,92 @@ VALUE        NAS-Port-Type     Wireless-802.11      19
 VALUE        Tunnel-Type       PPTP                 1
 VALUE        Tunnel-Type       L2TP                 3
 VALUE        Tunnel-Type       VLAN                 13
+
+# ---------------------------------------------------------------------------
+# Vendor-Specific Attributes (RFC 2865 §5.26)
+# The subset operators actually use in Access-Accept replies — role/group
+# assignment, admin privilege levels, and per-session bandwidth limits.
+# Attach them per policy via the "RADIUS reply attributes" field.
+# ---------------------------------------------------------------------------
+
+# Cisco (IOS / IOS-XE / WLC)
+VENDOR       Cisco                          9
+BEGIN-VENDOR Cisco
+ATTRIBUTE    Cisco-AVPair                   1    string
+END-VENDOR   Cisco
+
+# Hewlett-Packard / HPE ProCurve
+VENDOR       HP                             11
+BEGIN-VENDOR HP
+ATTRIBUTE    HP-Privilege-Level             1    integer
+ATTRIBUTE    HP-Command-String              2    string
+END-VENDOR   HP
+
+# Extreme Networks (EXOS)
+VENDOR       Extreme                        1916
+BEGIN-VENDOR Extreme
+ATTRIBUTE    Extreme-CLI-Authorization      201  integer
+ATTRIBUTE    Extreme-Netlogin-Vlan          203  string
+END-VENDOR   Extreme
+
+# Huawei (VRP)
+VENDOR       Huawei                         2011
+BEGIN-VENDOR Huawei
+ATTRIBUTE    Huawei-Exec-Privilege          29   integer
+END-VENDOR   Huawei
+
+# Juniper (Junos)
+VENDOR       Juniper                        2636
+BEGIN-VENDOR Juniper
+ATTRIBUTE    Juniper-Local-User-Name        1    string
+ATTRIBUTE    Juniper-Allow-Commands         2    string
+ATTRIBUTE    Juniper-Deny-Commands          3    string
+END-VENDOR   Juniper
+
+# Fortinet (FortiGate / FortiSwitch / FortiAP)
+VENDOR       Fortinet                       12356
+BEGIN-VENDOR Fortinet
+ATTRIBUTE    Fortinet-Group-Name            1    string
+ATTRIBUTE    Fortinet-Vdom-Name             3    string
+END-VENDOR   Fortinet
+
+# WISPr (Wi-Fi Alliance) — bandwidth limits honoured by most AP vendors
+VENDOR       WISPr                          14122
+BEGIN-VENDOR WISPr
+ATTRIBUTE    WISPr-Bandwidth-Max-Up         7    integer
+ATTRIBUTE    WISPr-Bandwidth-Max-Down       8    integer
+END-VENDOR   WISPr
+
+# Aruba / HPE (AOS, AOS-CX, Instant)
+VENDOR       Aruba                          14823
+BEGIN-VENDOR Aruba
+ATTRIBUTE    Aruba-User-Role                1    string
+ATTRIBUTE    Aruba-User-Vlan                2    integer
+ATTRIBUTE    Aruba-Admin-Role               4    string
+END-VENDOR   Aruba
+
+# MikroTik (RouterOS)
+VENDOR       Mikrotik                       14988
+BEGIN-VENDOR Mikrotik
+ATTRIBUTE    Mikrotik-Group                 3    string
+ATTRIBUTE    Mikrotik-Rate-Limit            8    string
+END-VENDOR   Mikrotik
+
+# Ruckus (SmartZone / Unleashed)
+VENDOR       Ruckus                         25053
+BEGIN-VENDOR Ruckus
+ATTRIBUTE    Ruckus-User-Groups             1    string
+END-VENDOR   Ruckus
+
+# Palo Alto Networks (PAN-OS)
+VENDOR       PaloAlto                       25461
+BEGIN-VENDOR PaloAlto
+ATTRIBUTE    PaloAlto-Admin-Role            1    string
+ATTRIBUTE    PaloAlto-Admin-Access-Domain   2    string
+END-VENDOR   PaloAlto
+
+# Arista (EOS)
+VENDOR       Arista                         30065
+BEGIN-VENDOR Arista
+ATTRIBUTE    Arista-AVPair                  1    string
+END-VENDOR   Arista

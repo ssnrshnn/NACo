@@ -25,7 +25,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -49,8 +49,7 @@ _webhook_worker_started = False
 
 import re as _re
 
-
-_SECRET_PATTERNS: tuple[tuple["_re.Pattern[str]", str], ...] = (
+_SECRET_PATTERNS: tuple[tuple[_re.Pattern[str], str], ...] = (
     # Bearer tokens (RFC 6750) — `Authorization: Bearer abc123` and bare
     # `Bearer abc123` strings that some libraries log directly.
     (_re.compile(r"(?i)(authorization\s*[:=]\s*)(bearer\s+)([A-Za-z0-9._\-+/=]{6,})"),
@@ -94,7 +93,7 @@ class SecretRedactionFilter(logging.Filter):
     arguments are interpolated before we scrub.
     """
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             text = record.getMessage()
         except Exception:
@@ -269,8 +268,8 @@ class WebhookHandler(logging.Handler):
         t.start()
 
     def _worker_loop(self) -> None:
-        import urllib.request
         import urllib.error
+        import urllib.request
 
         hostname = socket.gethostname()
         batch: list[logging.LogRecord] = []
@@ -302,7 +301,7 @@ class WebhookHandler(logging.Handler):
                     "host":    hostname,
                     "records": [
                         {
-                            "timestamp": datetime.fromtimestamp(r.created, timezone.utc)
+                            "timestamp": datetime.fromtimestamp(r.created, UTC)
                                          .strftime("%Y-%m-%dT%H:%M:%SZ"),
                             "level":     r.levelname,
                             "logger":    r.name,
@@ -359,7 +358,38 @@ def _remove_handlers(root: logging.Logger) -> None:
         root.removeHandler(h)
 
 
-def setup_logging(cfg: "AppConfig | None" = None) -> logging.Logger:
+_record_factory_installed = False
+
+
+def _install_request_id_record_factory() -> None:
+    """Ensure every log record — from any logger — carries ``request_id``.
+
+    A record factory (unlike a logger-level filter) also covers records
+    emitted by third-party loggers such as ``sqlalchemy.engine`` and
+    ``uvicorn.*`` that propagate to the root handlers. Idempotent.
+    """
+    global _record_factory_installed
+    if _record_factory_installed:
+        return
+    _record_factory_installed = True
+
+    from naco.core.request_id import get_request_id
+
+    old_factory = logging.getLogRecordFactory()
+
+    def _factory(*args, **kwargs):
+        record = old_factory(*args, **kwargs)
+        if not hasattr(record, "request_id"):
+            try:
+                record.request_id = get_request_id() or "-"
+            except Exception:
+                record.request_id = "-"
+        return record
+
+    logging.setLogRecordFactory(_factory)
+
+
+def setup_logging(cfg: AppConfig | None = None) -> logging.Logger:
     """
     Configure all log handlers based on config.
 
@@ -375,8 +405,8 @@ def setup_logging(cfg: "AppConfig | None" = None) -> logging.Logger:
         from naco.config import get_config
         cfg = get_config()
 
-    # ``request_id`` is interpolated by every formatter; the
-    # ``RequestIDFilter`` below splices it onto each record. We render it
+    # ``request_id`` is interpolated by every formatter; the record factory
+    # installed below splices it onto each record. We render it
     # as ``[rid: <id>]`` only when it isn't the placeholder "-" so log
     # lines emitted during application start-up stay readable.
     fmt = "%(asctime)s [%(levelname)-8s] [%(request_id)s] %(name)s — %(message)s"
@@ -393,11 +423,16 @@ def setup_logging(cfg: "AppConfig | None" = None) -> logging.Logger:
     # API/master keys into logs / syslog / Graylog / webhooks.
     root.addFilter(SecretRedactionFilter())
 
-    # Request-correlation filter — splices ``record.request_id`` from the
+    # Request-correlation — splice ``record.request_id`` from the
     # ``naco.core.request_id`` contextvar onto every log record so the
     # formatter above can reference ``%(request_id)s``.
-    from naco.core.request_id import RequestIDFilter
-    root.addFilter(RequestIDFilter())
+    #
+    # This must be a log-record *factory*, not a filter on the root logger:
+    # logger-level filters do not run for records that merely *propagate* to
+    # root from third-party loggers (``sqlalchemy.engine``, ``uvicorn`` …),
+    # and any such record used to crash every handler with
+    # ``Formatting field not found in record: 'request_id'``.
+    _install_request_id_record_factory()
 
     # ── 1. Console ────────────────────────────────────────────────────────
     ch = logging.StreamHandler(sys.stdout)
@@ -491,7 +526,7 @@ def setup_logging(cfg: "AppConfig | None" = None) -> logging.Logger:
 
             sh.setFormatter(
                 logging.Formatter(
-                    f"naco[%(process)d]: %(levelname)s %(name)s — %(message)s"
+                    "naco[%(process)d]: %(levelname)s %(name)s — %(message)s"
                 )
             )
             root.addHandler(sh)
@@ -654,12 +689,13 @@ def send_test_log(target: str) -> tuple[bool, str]:
             validate_outbound_url(lf.webhook.url, allowlist=cfg.security.webhook_allowlist)
         except UrlPolicyError as exc:
             return False, f"Webhook URL rejected by SSRF policy: {exc}"
-        import urllib.request, urllib.error
+        import urllib.error
+        import urllib.request
         payload = json.dumps({
             "source": "NACo",
             "host": socket.gethostname(),
             "records": [{
-                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "level": "INFO",
                 "logger": "naco.test",
                 "message": "NACo webhook test message",
