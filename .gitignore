@@ -42,3 +42,6 @@ deploy/data/
 # OS
 .DS_Store
 Thumbs.db
+
+# Original logo source (kept local, not pushed — resized copies live in naco/web/static/img/)
+NACo.png

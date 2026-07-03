@@ -11,7 +11,7 @@ reports seriously and report them privately.
 | 2.x     | Active — full support   |
 | 1.x     | RaspISE — end-of-life, **no security fixes** |
 
-Anyone running v1 / [RaspISE](https://github.com/your-org/raspise)
+Anyone running v1 / [RaspISE](https://github.com/ssnrshnn/raspise)
 should migrate. NACo v2 is a clean break; there is no upgrade path and
 no patches will be backported.
 

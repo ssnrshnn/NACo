@@ -4,7 +4,7 @@ NACo is a modern, container-native open-source Network Access Control & AAA
 server. It replaces commercial NACs (Cisco ISE, Aruba ClearPass, FortiNAC)
 with a focused, auditable stack that runs anywhere Docker runs.
 
-[![CI](https://github.com/your-org/naco/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/naco/actions/workflows/ci.yml)
+[![CI](https://github.com/ssnrshnn/naco/actions/workflows/ci.yml/badge.svg)](https://github.com/ssnrshnn/naco/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Heads-up — NACo is a clean v2.0.0 fork of the now-archived RaspISE project.**
@@ -40,6 +40,7 @@ with a focused, auditable stack that runs anywhere Docker runs.
 | EAP                  | Delegated to FreeRADIUS sidecar via REST hooks (`/api/v1/eap/*`)            |
 | TACACS+              | RFC 8907 authentication, authorization & accounting                         |
 | Policy engine        | Default-deny attribute rules: user, group, MAC OUI, NAS, time-of-day, VLAN |
+| Vendor interop       | Dynamic VLAN via RFC 3580 + per-policy VSAs (Cisco, Aruba, Juniper, Fortinet, MikroTik, …) — see [`docs/VENDORS.md`](docs/VENDORS.md) |
 | Identity sources     | Local DB (bcrypt), LDAP / Active Directory with auto-provisioning          |
 | Captive guest portal | Cookie-CSRF, MAC-bound timed sessions, Wi-Fi QR code provisioning           |
 | Device profiling     | Passive DHCP / mDNS fingerprinting with OUI-based classification           |
@@ -93,20 +94,19 @@ FreeRADIUS is opt-in and used only for EAP outer-method termination
 ### 60-second launch
 
 ```bash
-git clone https://github.com/your-org/naco.git
+git clone https://github.com/ssnrshnn/naco.git
 cd naco
+./quickstart.sh          # generates .env with strong secrets, starts the stack
+```
 
-# Generate strong secrets and edit any other settings
-cp .env.example .env
-sed -i \
-    -e "s/__SESSION__/$(openssl rand -hex 32)/" \
-    -e "s/__API__/$(openssl rand -hex 32)/"     \
-    -e "s/__CSRF__/$(openssl rand -hex 32)/"    \
-    -e "s/__POSTGRES__/$(openssl rand -hex 24)/" \
-    .env
+That's it. `quickstart.sh` prints the generated admin password. Everything
+lives in **one** `docker-compose.yml` at the repository root — no overlay
+files to combine. Prefer doing it by hand?
 
-docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs -f naco
+```bash
+cp .env.example .env     # fill in the REQUIRED values
+docker compose up -d
+docker compose logs -f naco
 ```
 
 Then open:
@@ -117,16 +117,17 @@ Then open:
 - Portal:     `http://<your-host>/portal` (captive portals must be HTTP)
 - Metrics:   `https://<your-host>/api/v1/metrics`
 
-### Optional profiles
+### Optional features (same file, compose profiles)
 
 ```bash
 # Add FreeRADIUS for EAP-TLS / PEAP / EAP-TTLS
-docker compose -f deploy/docker-compose.yml \
-               -f deploy/docker-compose.eap.yml up -d
+./quickstart.sh --eap            # or: docker compose --profile eap up -d
 
 # Add Prometheus + Grafana + Loki + Promtail
-docker compose -f deploy/docker-compose.yml \
-               -f deploy/docker-compose.obs.yml up -d
+./quickstart.sh --obs            # or: docker compose --profile obs up -d
+
+# Or pin profiles permanently in .env:
+#   COMPOSE_PROFILES=eap,obs
 ```
 
 ---
@@ -137,10 +138,12 @@ NACo reads YAML from the path in `$NACO_CONFIG` (default
 `/etc/naco/config.yaml`). Every section is validated by Pydantic — startup
 fails loudly on unknown keys or wrong types.
 
-A documented [`naco/config/config.yaml`](naco/config/config.yaml) ships in
-the image. The full schema is generated from the Pydantic models in
-[`naco/config/__init__.py`](naco/config/__init__.py) — keep that file as
-the source of truth.
+The deployment config lives at [`config/config.yaml`](config/config.yaml)
+in the repository root — Docker Compose mounts that directory to
+`/etc/naco`, so edits take effect on the next `docker compose restart naco`.
+The full schema is defined by the Pydantic models in
+[`naco/config/__init__.py`](naco/config/__init__.py) — that file is the
+source of truth.
 
 ### Most-changed knobs
 
@@ -162,7 +165,9 @@ Every secret can also be passed via `${NACO_*}` environment variables (see
 
 ## Network access — NAS / switch setup
 
-Configure your NAS (switch, AP, firewall) for RADIUS:
+Per-vendor configuration examples (Cisco, Aruba, Juniper, Fortinet,
+MikroTik, UniFi, Extreme, Ruckus, HPE, Palo Alto) live in
+[`docs/VENDORS.md`](docs/VENDORS.md). The generic recipe:
 
 | Field             | Value                                              |
 | ----------------- | -------------------------------------------------- |
@@ -202,8 +207,7 @@ that family is large and security-sensitive enough to deserve a dedicated
 project. Enable the optional `eap` profile instead:
 
 ```bash
-docker compose -f deploy/docker-compose.yml \
-               -f deploy/docker-compose.eap.yml up -d
+docker compose --profile eap up -d
 ```
 
 The bundled FreeRADIUS container terminates EAP-TLS / PEAP / EAP-TTLS and
@@ -233,9 +237,8 @@ pre-wired to NACo:
   rejections.
 
 ```bash
-docker compose -f deploy/docker-compose.yml \
-               -f deploy/docker-compose.obs.yml up -d
-open http://localhost:3000   # admin / admin (change on first login)
+docker compose --profile obs up -d
+open http://localhost:3000   # admin / ${GRAFANA_ADMIN_PASSWORD}
 ```
 
 ---
@@ -269,10 +272,15 @@ NACo is **default-deny**:
    dropped (CVE-2024-3596 / BlastRADIUS mitigation).
 3. MAB requires `User-Password == User-Name == MAC` (RFC 3580). A
    compromised NAS cannot bypass MAB by guessing passwords.
-4. The admin UI, API, and portal use **three independent secrets**
+4. Captive-portal guests are the one deliberate exception to
+   default-deny: a MAC with a live, unexpired guest registration is
+   accepted via MAB onto the **guest VLAN** (decision label
+   `GUEST_SESSION`). An explicit DENY policy still takes precedence,
+   and the grant disappears when the session expires.
+5. The admin UI, API, and portal use **three independent secrets**
    (`session_secret`, `api_secret`, `csrf_secret`). A leak of one does not
    compromise the others.
-5. All admin actions are persisted in `admin_audit_logs` for 365 days by
+6. All admin actions are persisted in `admin_audit_logs` for 365 days by
    default.
 
 See [`SECURITY.md`](SECURITY.md) for the full threat model, reporting

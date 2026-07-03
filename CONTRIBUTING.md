@@ -11,7 +11,7 @@ Be kind. Be precise. Engage with the actual diff, not with the contributor.
 ## Getting set up
 
 ```bash
-git clone https://github.com/your-org/naco.git
+git clone https://github.com/ssnrshnn/naco.git
 cd naco
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
@@ -20,7 +20,7 @@ pip install -e ".[dev]"
 For full-stack development including Postgres, Redis, and Caddy:
 
 ```bash
-docker compose -f deploy/docker-compose.yml \
+docker compose -f docker-compose.yml \
                -f deploy/docker-compose.dev.yml up
 ```
 
