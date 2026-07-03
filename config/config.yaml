@@ -1,0 +1,108 @@
+# NACo configuration — mounted into the container at /etc/naco/config.yaml.
+#
+# This file ships with production-sane defaults so `docker compose up` works
+# out of the box. Secrets and connection URLs are intentionally NOT set here:
+# they come from .env via environment variables (NACO_SESSION_SECRET,
+# NACO_API_SECRET, NACO_CSRF_SECRET, NACO_ADMIN_PASSWORD, NACO_DB_URL,
+# NACO_REDIS_URL), which always override this file.
+#
+# Full schema: naco/config/__init__.py (Pydantic models, the source of truth).
+
+server:
+  name: "NACo-01"
+  host: "0.0.0.0"
+  port: 8080
+  token_expire_minutes: 60
+  # CIDRs trusted to set X-Forwarded-For (loopback + docker bridge for Caddy).
+  trusted_proxies:
+    - "127.0.0.1/32"
+    - "::1/128"
+    - "172.16.0.0/12"
+  debug: false
+  log_level: "INFO"
+  log_file: "/var/log/naco/naco.log"
+
+radius:
+  enabled: true
+  host: "0.0.0.0"
+  auth_port: 1812
+  acct_port: 1813
+  coa_port: 3799
+  # RFC 3579 Message-Authenticator required — BlastRADIUS (CVE-2024-3596).
+  require_message_authenticator: true
+  # Add NAS clients in the admin UI (Settings → NAS Clients) or list them
+  # here. UI-managed clients are hot-reloaded every 30 s.
+  clients: []
+  default_vlan: 10
+  guest_vlan: 20
+  reject_vlan: 99
+
+tacacs:
+  # Enable after setting a strong key (per-device keys go in `clients`).
+  enabled: false
+  host: "0.0.0.0"
+  port: 49
+  key: "CHANGE_ME_tacacs_default_key"
+  clients: []
+  max_connections: 256
+  max_connections_per_peer: 32
+
+portal:
+  enabled: true
+  redirect_url: "http://example.com"
+  session_hours: 8
+  guest_ssid: "NACo-Guest"
+  guest_psk: "CHANGE_ME_guest_wifi_password"
+
+profiler:
+  enabled: true
+  # With host networking this is the host's LAN interface.
+  listen_interface: "eth0"
+  oui_db: "/var/lib/naco/oui.csv"
+
+eap:
+  # Enable together with `docker compose --profile eap`. The token must match
+  # NACO_EAP_BEARER_TOKEN in .env (FreeRADIUS is given the same value).
+  enabled: false
+  bearer_token: ""
+
+ldap:
+  enabled: false
+  server: "ldap://dc.example.com"
+  port: 389
+  use_ssl: false
+  bind_dn: ""
+  bind_password: ""
+  base_dn: ""
+  user_filter: "(sAMAccountName={username})"
+  group_attribute: "memberOf"
+  group_map: {}
+
+log_forwarding:
+  syslog:
+    enabled: false
+    address: "/dev/log"
+    facility: "local0"
+    protocol: "udp"
+    port: 514
+  graylog:
+    enabled: false
+    host: "127.0.0.1"
+    port: 12201
+    protocol: "udp"
+  webhook:
+    enabled: false
+    url: ""
+    level: "WARNING"
+    timeout_seconds: 3.0
+    batch_size: 10
+    batch_interval_seconds: 5.0
+    headers: {}
+
+security:
+  # CIDRs allowed as outbound webhook / log-forwarding targets in addition to
+  # public addresses (RFC 1918, loopback, and cloud-metadata IPs are refused
+  # by default — see naco.core.netutils).
+  webhook_allowlist: []
+
+event_webhooks: []

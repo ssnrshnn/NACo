@@ -1,10 +1,13 @@
-# Local development override:
-#   * builds the `Dockerfile.dev` image
-#   * mounts the source tree for hot reload
-#   * exposes naco on host:8080 (no host networking — RADIUS won't work
-#     transparently in dev; this is fine for UI / API hacking).
+# Contributor-only development override — NOT needed to run NACo.
 #
-#     docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   * builds Dockerfile.dev and mounts the source tree for hot reload
+#   * bridge networking + published port 8080 (RADIUS/TACACS source IPs
+#     won't be real in dev; fine for UI / API work)
+#   * disables Caddy
+#
+# Run from the repository root:
+#
+#     docker compose -f docker-compose.yml -f deploy/docker-compose.dev.yml up
 
 name: naco
 
@@ -12,17 +15,19 @@ services:
   naco:
     image: naco-dev
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile.dev
-    network_mode: bridge
+    # Clear the base file's `network_mode: host` so the service can join the
+    # bridge network and publish port 8080 like a normal container.
+    network_mode: !reset null
     networks: [naco_net]
     ports:
       - "8080:8080"
     volumes:
-      - ../naco:/app/naco
-      - ../alembic:/app/alembic
-      - ../tests:/app/tests
-      - ../config:/etc/naco
+      - ./naco:/app/naco
+      - ./alembic:/app/alembic
+      - ./tests:/app/tests
+      - ./config:/etc/naco:ro
     environment:
       NACO_DB_URL: postgresql+asyncpg://${NACO_DB_USER:-naco}:${NACO_DB_PASSWORD:-naco}@postgres:5432/${NACO_DB_NAME:-naco}
       NACO_REDIS_URL: redis://redis:6379/0
