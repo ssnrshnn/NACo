@@ -38,6 +38,10 @@ class RadiusConfig(BaseModel):
     # When true, every Access-Request must carry a valid Message-Authenticator
     # attribute (RFC 3579). Mitigates CVE-2024-3596 (BlastRADIUS).
     require_message_authenticator: bool = True
+    # When a policy is created/updated/deleted, send RFC 5176
+    # Disconnect-Requests to the NASes of affected active sessions so they
+    # re-authenticate under the new rules immediately.
+    coa_on_policy_change: bool = True
 
 
 class TacacsClientConfig(BaseModel):

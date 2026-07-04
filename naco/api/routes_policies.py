@@ -10,6 +10,7 @@ from naco.api.auth import require_role
 from naco.api.schemas import PolicyCreate, PolicyOut, PolicyUpdate, StatusResponse
 from naco.db import get_db
 from naco.db.models import AdminRole, AdminUser, Policy
+from naco.radius.coa_sync import schedule_policy_coa
 
 router = APIRouter(prefix="/api/v1", tags=["Policies"])
 
@@ -46,6 +47,10 @@ async def create_policy(
     await audit(db, admin, "CREATE", "policy", "", f"name={body.name}")
     await db.commit()
     await db.refresh(pol)
+    # Sessions the new rule covers were authorised under the old rule set —
+    # force them to re-authenticate (config: radius.coa_on_policy_change).
+    if pol.enabled:
+        schedule_policy_coa(pol.conditions)
     return PolicyOut.model_validate(pol)
 
 
@@ -59,6 +64,7 @@ async def update_policy(
     pol = (await db.execute(select(Policy).where(Policy.id == policy_id))).scalar_one_or_none()
     if not pol:
         raise HTTPException(404, "Policy not found")
+    old_conditions = pol.conditions  # sessions matched by the OLD rule are affected too
     if body.name        is not None: pol.name        = body.name
     if body.description is not None: pol.description = body.description
     if body.priority    is not None: pol.priority    = body.priority
@@ -70,6 +76,7 @@ async def update_policy(
     if body.enabled     is not None: pol.enabled     = body.enabled
     await db.commit()
     await db.refresh(pol)
+    schedule_policy_coa(old_conditions, pol.conditions)
     return PolicyOut.model_validate(pol)
 
 
@@ -83,6 +90,12 @@ async def delete_policy(
     if not pol:
         raise HTTPException(404, "Policy not found")
     await audit(db, admin, "DELETE", "policy", str(policy_id), f"name={pol.name}")
+    conditions = pol.conditions
+    was_enabled = pol.enabled
     await db.delete(pol)
     await db.commit()
+    # Sessions authorised by the deleted rule must re-authenticate against
+    # whatever remains (likely landing on default-deny).
+    if was_enabled:
+        schedule_policy_coa(conditions)
     return StatusResponse(status="ok", message=f"Policy {policy_id} deleted")

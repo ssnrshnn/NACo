@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from naco.api._audit import audit
 from naco.api.auth import require_role
 from naco.api.schemas import ActiveSessionOut, StatusResponse
 from naco.config import get_config
+from naco.core.utils import normalise_mac
 from naco.db import get_db
 from naco.db.models import ActiveSession, AdminRole, AdminUser, NasClient
 
@@ -56,6 +59,66 @@ async def terminate_session(
     await db.delete(sess)
     await db.commit()
     return StatusResponse(status="ok", message=f"Session removed.{coa_msg}")
+
+
+class BulkDisconnect(BaseModel):
+    """Filter for bulk CoA disconnect. At least one field must be set;
+    ``all=true`` is the explicit opt-in for a full flush."""
+    username: str | None = None
+    mac_address: str | None = None
+    nas_ip: str | None = None
+    all: bool = False
+
+    @model_validator(mode="after")
+    def _at_least_one(self):
+        if not (self.username or self.mac_address or self.nas_ip or self.all):
+            raise ValueError(
+                "set at least one of username / mac_address / nas_ip, "
+                "or all=true to disconnect every session"
+            )
+        return self
+
+
+@router.post("/sessions/disconnect", response_model=StatusResponse)
+async def bulk_disconnect(
+    body: BulkDisconnect,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(require_role(AdminRole.OPERATOR)),
+):
+    """Send RFC 5176 Disconnect-Requests to every session matching the filter.
+
+    Session rows stay in the table — the NAS's Accounting-Stop clears them.
+    """
+    from naco.radius.coa_sync import disconnect_sessions
+
+    stmt = select(ActiveSession)
+    if body.username:
+        stmt = stmt.where(ActiveSession.username == body.username)
+    if body.mac_address:
+        try:
+            mac = normalise_mac(body.mac_address)
+        except ValueError:
+            raise HTTPException(422, "invalid MAC address")
+        stmt = stmt.where(ActiveSession.mac_address == mac)
+    if body.nas_ip:
+        stmt = stmt.where(ActiveSession.nas_ip == body.nas_ip)
+
+    sessions = (await db.execute(stmt)).scalars().all()
+    if not sessions:
+        return StatusResponse(status="ok", message="No matching active sessions")
+
+    summary = await disconnect_sessions(list(sessions), db)
+    await audit(
+        db, admin, "DISCONNECT", "session", "bulk",
+        f"filter={body.model_dump(exclude_none=True)} summary={summary}",
+    )
+    await db.commit()
+    return StatusResponse(
+        status="ok",
+        message=(f"Disconnect sent to {summary['total']} session(s): "
+                 f"{summary['acked']} acked, {summary['failed']} failed, "
+                 f"{summary['skipped']} skipped"),
+    )
 
 
 async def _get_nas_secret(nas_ip: str, db: AsyncSession) -> str:
