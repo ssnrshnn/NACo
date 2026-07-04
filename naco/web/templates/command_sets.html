@@ -31,11 +31,12 @@
           </td>
           <td class="text-end">
             <button class="btn btn-sm btn-outline-info me-1"
-                    onclick='editCs({{ cs.id }}, {"name":{{ cs.name|tojson }},"description":{{ cs.description|tojson }},"rules":[{% for r in cs.rules %}{"priority":{{ r.priority }},"action":{{ r.action.value|default(r.action)|tojson }},"command_pattern":{{ r.command_pattern|tojson }},"args_pattern":{{ r.args_pattern|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]})'>
+                    data-action="editCs" data-id="{{ cs.id }}"
+                    data-cs='{"name":{{ cs.name|tojson }},"description":{{ cs.description|tojson }},"rules":[{% for r in cs.rules %}{"priority":{{ r.priority }},"action":{{ r.action.value|default(r.action)|tojson }},"command_pattern":{{ r.command_pattern|tojson }},"args_pattern":{{ r.args_pattern|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]}'>
               <i class="bi bi-pencil"></i>
             </button>
             <button class="btn btn-sm btn-outline-danger"
-                    onclick="deleteCs({{ cs.id }}, '{{ cs.name }}')">
+                    data-action="deleteCs" data-id="{{ cs.id }}" data-name="{{ cs.name }}">
               <i class="bi bi-trash"></i>
             </button>
           </td>
@@ -103,7 +104,7 @@
         <hr class="border-secondary">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <span class="fw-semibold small">Rules <span class="text-muted fw-normal">(first match wins)</span></span>
-          <button class="btn btn-sm btn-outline-info" onclick="addRuleRow()">
+          <button type="button" class="btn btn-sm btn-outline-info" data-action="addRuleRowBtn">
             <i class="bi bi-plus-circle me-1"></i>Add Rule
           </button>
         </div>
@@ -111,7 +112,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn btn-info" onclick="saveCs()">Save</button>
+        <button class="btn btn-info" data-action="saveCs">Save</button>
       </div>
     </div>
   </div>
@@ -121,6 +122,10 @@
 {% block scripts %}
 <script nonce="{{ csp_nonce() }}">
 let ruleIdx = 0;
+
+// Delegated "Add Rule" button — must not forward the element into
+// addRuleRow's positional (priority, action, …) parameters.
+function addRuleRowBtn() { addRuleRow(); }
 
 function addRuleRow(priority, action, cmdPattern, argsPattern) {
   priority   = priority   || 100;
@@ -145,7 +150,8 @@ function addRuleRow(priority, action, cmdPattern, argsPattern) {
       <input type="text" class="form-control form-control-sm" style="min-width:140px;flex:0.6"
              data-field="args_pattern" value="${argsPattern.replace(/"/g,'&quot;')}"
              placeholder="args pattern (optional)">
-      <button class="btn btn-sm btn-outline-danger" onclick="this.closest('.rule-row').remove()">
+      <button type="button" class="btn btn-sm btn-outline-danger"
+              data-action="removeRow" data-target=".rule-row">
         <i class="bi bi-trash"></i>
       </button>
     </div>`;
@@ -188,17 +194,18 @@ async function saveCs() {
   }
 }
 
-async function deleteCs(id, name) {
-  if (!confirm('Delete command set "' + name + '"?')) return;
-  const r = await fetch('/api/v1/command-sets/' + id, {
+async function deleteCs(el) {
+  if (!confirm('Delete command set "' + el.dataset.name + '"?')) return;
+  const r = await fetch('/api/v1/command-sets/' + el.dataset.id, {
     method: 'DELETE', headers: {'X-CSRF-Token': window.CSRF_TOKEN}
   });
   if (r.ok) location.reload();
 }
 
-function editCs(id, cs) {
+function editCs(el) {
+  const cs = JSON.parse(el.dataset.cs);
   document.getElementById('csModalTitle').textContent = 'Edit Command Set';
-  document.getElementById('cs_id').value = id;
+  document.getElementById('cs_id').value = el.dataset.id;
   document.getElementById('cs_name').value = cs.name;
   document.getElementById('cs_desc').value = cs.description || '';
   document.getElementById('ruleRows').innerHTML = '';

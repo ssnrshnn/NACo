@@ -70,7 +70,7 @@
             </button>
             {% if a.username != user %}
             <form method="post" action="/admin-users/{{ a.id }}/delete" class="d-inline"
-                  onsubmit="return confirm('Delete admin {{ a.username }}?')">
+                  data-confirm="Delete admin {{ a.username }}?">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
             </form>

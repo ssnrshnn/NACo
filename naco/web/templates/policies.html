@@ -58,7 +58,7 @@
           </td>
           <td>
             <button class="btn btn-sm btn-outline-danger"
-                    onclick="deletePolicy({{ p.id }}, '{{ p.name }}')">
+                    data-action="deletePolicy" data-id="{{ p.id }}" data-name="{{ p.name }}">
               <i class="bi bi-trash"></i>
             </button>
           </td>
@@ -115,7 +115,7 @@
         <hr class="border-secondary">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <span class="fw-semibold small">Conditions <span class="text-muted fw-normal">(all must match — leave empty to match everything)</span></span>
-          <button class="btn btn-sm btn-outline-info" onclick="addConditionRow()">
+          <button type="button" class="btn btn-sm btn-outline-info" data-action="addConditionRow">
             <i class="bi bi-plus-circle me-1"></i>Add Condition
           </button>
         </div>
@@ -125,7 +125,7 @@
         <div class="d-flex justify-content-between align-items-center mb-2">
           <span class="fw-semibold small">RADIUS reply attributes
             <span class="text-muted fw-normal">(optional — vendor roles, bandwidth, timeouts)</span></span>
-          <button class="btn btn-sm btn-outline-info" onclick="addReplyAttrRow()">
+          <button type="button" class="btn btn-sm btn-outline-info" data-action="addReplyAttrRow">
             <i class="bi bi-plus-circle me-1"></i>Add Attribute
           </button>
         </div>
@@ -154,7 +154,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn btn-info" onclick="savePolicy()">Save Policy</button>
+        <button class="btn btn-info" data-action="savePolicy">Save Policy</button>
       </div>
     </div>
   </div>
@@ -176,15 +176,22 @@ const COND_TYPES = {
 
 let rowIdx = 0;
 
-function addConditionRow(type) {
-  type = type || 'group';
+function addConditionRow() {
   const idx = rowIdx++;
   const row = document.createElement('div');
   row.className = 'condition-row border border-secondary rounded p-2 mb-2';
   row.dataset.idx = idx;
-  row.innerHTML = buildRowHtml(idx, type);
+  row.innerHTML = buildRowHtml(idx, 'group');
   document.getElementById('conditionRows').appendChild(row);
 }
+
+// Rebuild a condition row when its type <select> changes (CSP forbids
+// inline onchange=, so delegate on the static container).
+document.getElementById('conditionRows').addEventListener('change', (e) => {
+  if (!e.target.classList.contains('cond-type-select')) return;
+  const row = e.target.closest('.condition-row');
+  row.innerHTML = buildRowHtml(row.dataset.idx, e.target.value);
+});
 
 function buildRowHtml(idx, type) {
   const typeOpts = Object.entries(COND_TYPES)
@@ -234,18 +241,13 @@ function buildRowHtml(idx, type) {
   }
 
   return `<div class="d-flex align-items-start gap-2 flex-wrap">
-    <select class="form-select form-select-sm" style="max-width:170px"
-            onchange="changeCondType(this, ${idx})">${typeOpts}</select>
+    <select class="form-select form-select-sm cond-type-select" style="max-width:170px">${typeOpts}</select>
     ${extra}
-    <button class="btn btn-sm btn-outline-danger ms-auto" onclick="this.closest('.condition-row').remove()">
+    <button type="button" class="btn btn-sm btn-outline-danger ms-auto"
+            data-action="removeRow" data-target=".condition-row">
       <i class="bi bi-trash"></i>
     </button>
   </div>`;
-}
-
-function changeCondType(sel, idx) {
-  const row = document.querySelector(`.condition-row[data-idx="${idx}"]`);
-  row.innerHTML = buildRowHtml(idx, sel.value);
 }
 
 function buildConditions() {
@@ -292,7 +294,8 @@ function addReplyAttrRow() {
            placeholder="Attribute name (e.g. Aruba-User-Role)" style="max-width:260px">
     <input type="text" class="form-control form-control-sm attr-value"
            placeholder="Value (e.g. employee)" style="min-width:200px">
-    <button class="btn btn-sm btn-outline-danger ms-auto" onclick="this.closest('.reply-attr-row').remove()">
+    <button type="button" class="btn btn-sm btn-outline-danger ms-auto"
+            data-action="removeRow" data-target=".reply-attr-row">
       <i class="bi bi-trash"></i>
     </button>`;
   document.getElementById('replyAttrRows').appendChild(row);
@@ -346,9 +349,9 @@ async function savePolicy() {
   }
 }
 
-async function deletePolicy(id, name) {
-  if (!confirm('Delete policy "' + name + '"?')) return;
-  const r = await fetch('/api/v1/policies/' + id, { method: 'DELETE', headers: {'X-CSRF-Token': window.CSRF_TOKEN} });
+async function deletePolicy(el) {
+  if (!confirm('Delete policy "' + el.dataset.name + '"?')) return;
+  const r = await fetch('/api/v1/policies/' + el.dataset.id, { method: 'DELETE', headers: {'X-CSRF-Token': window.CSRF_TOKEN} });
   if (r.ok) location.reload();
 }
 

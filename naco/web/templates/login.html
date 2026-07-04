@@ -22,20 +22,21 @@
       backdrop-filter: blur(10px);
     }
     .brand-icon {
-      width: 72px; height: 72px;
-      border-radius: 16px;
+      width: 84px; height: 84px;
       display: flex; align-items: center; justify-content: center;
       margin: 0 auto 20px;
-      overflow: hidden;
-      box-shadow: 0 0 24px rgba(13, 202, 240, 0.25);
     }
-    .brand-icon img { width: 100%; height: 100%; object-fit: cover; }
+    .brand-icon img {
+      width: 100%; height: 100%;
+      filter: drop-shadow(0 0 18px rgba(13, 202, 240, 0.45))
+              drop-shadow(0 0 42px rgba(52, 211, 153, 0.25));
+    }
   </style>
 </head>
 <body>
   <div class="login-card">
     <div class="brand-icon">
-      <img src="/static/img/logo-128.png" alt="NACo logo">
+      <img src="/static/img/emblem-192.png" alt="NACo logo">
     </div>
     <h4 class="text-center fw-bold mb-1">NACo</h4>
     <p class="text-center text-muted small mb-4">Admin Console</p>
@@ -60,8 +61,7 @@
       </div>
       <button type="submit" class="btn btn-info w-100 fw-semibold">Sign In</button>
       <div class="text-center mt-2">
-        <a href="#" class="text-muted small" id="show-totp" style="{% if totp_required %}display:none{% endif %}"
-           onclick="document.getElementById('totp-group').style.display='block';this.style.display='none';return false;">
+        <a href="#" class="text-muted small" id="show-totp" style="{% if totp_required %}display:none{% endif %}">
           Have a 2FA code?
         </a>
       </div>
@@ -73,5 +73,13 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script nonce="{{ csp_nonce() }}">
+    // Inline onclick is blocked by the nonce-based CSP — wire it here.
+    document.getElementById('show-totp').addEventListener('click', function (e) {
+      e.preventDefault();
+      document.getElementById('totp-group').style.display = 'block';
+      this.style.display = 'none';
+    });
+  </script>
 </body>
 </html>

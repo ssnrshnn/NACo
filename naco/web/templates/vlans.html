@@ -39,7 +39,7 @@
           <td class="text-muted small">{{ v.created_at.strftime('%Y-%m-%d') if v.created_at else '—' }}</td>
           <td class="text-end">
             <form method="post" action="/vlans/{{ v.id }}/delete" class="d-inline"
-                  onsubmit="return confirm('Delete VLAN mapping {{ v.name }}?')">
+                  data-confirm="Delete VLAN mapping {{ v.name }}?">
               <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
             </form>
           </td>

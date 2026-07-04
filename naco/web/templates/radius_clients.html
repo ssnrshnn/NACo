@@ -39,7 +39,7 @@
           <td>
             <span class="font-monospace text-muted secret-text" id="secret-{{ c.id }}">••••••••</span>
             <button class="btn btn-sm btn-link p-0 ms-1 text-secondary reveal-btn" title="Show/hide"
-                    onclick="toggleSecret({{ c.id }})">
+                    data-action="toggleSecret" data-id="{{ c.id }}">
               <i class="bi bi-eye"></i>
             </button>
           </td>
@@ -58,7 +58,7 @@
               </button>
             </form>
             <form method="post" action="/radius-clients/{{ c.id }}/delete" class="d-inline"
-                  onsubmit="return confirm('Delete NAS client {{ c.name }}?')">
+                  data-confirm="Delete NAS client {{ c.name }}?">
               <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
             </form>
           </td>
@@ -114,7 +114,8 @@
 
 {% block scripts %}
 <script nonce="{{ csp_nonce() }}">
-async function toggleSecret(id) {
+async function toggleSecret(el) {
+  const id = el.dataset.id;
   const span = document.getElementById('secret-' + id);
   if (span.dataset.revealed === '1') {
     span.textContent = '••••••••';

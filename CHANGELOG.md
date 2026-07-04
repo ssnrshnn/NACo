@@ -21,42 +21,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/VENDORS.md` — per-vendor NAS configuration guide (802.1X/MAB,
   dynamic VLAN, CoA, TACACS+).
 - Admin UI branding: NACo logo as favicon, sidebar brand, and login mark.
+- **One-line install** — `curl -fsSL …/install.sh | bash` clones and
+  boots the stack. `quickstart.sh` gained preflight checks (Docker
+  daemon, Compose v2, openssl, port-conflict warnings), pulls the
+  prebuilt GHCR image instead of building locally (build remains the
+  offline fallback), and waits for the health endpoint before printing
+  the endpoints.
+- **Published container images** — new `release.yml` workflow pushes
+  multi-arch (amd64 + arm64) images to `ghcr.io/ssnrshnn/naco` on every
+  main push (`:latest`) and version tag (`:X.Y.Z`, `:X.Y`, `:X`).
+- **802.1X out of the box** — the FreeRADIUS EAP sidecar is now part of
+  the default stack (`COMPOSE_PROFILES=eap`; opt out with
+  `./quickstart.sh --no-eap`). It listens on 2812/2813 next to NACo's
+  built-in 1812/1813, and `quickstart.sh` auto-generates the bearer
+  token plus a self-signed CA/server certificate. Supported methods:
+  EAP-TTLS+PAP, PEAP+GTC, EAP-TLS (PEAP-MSCHAPv2 excluded — the bcrypt
+  store cannot serve NT hashes). Setting `NACO_EAP_BEARER_TOKEN`
+  auto-enables the `/api/v1/eap/*` endpoints.
 
-## [2.0.1] — 2026-05-12
+### Fixed — FreeRADIUS sidecar could never boot
 
-Critical security hot-fixes (Phase 0). Upgrade promptly if you expose
-EAP REST hooks, use TOTP enrollment via the API, run `nacoctl backup` on
-PostgreSQL, or rely on profiler-discovered devices being implicitly trusted.
-
-### Security
-
-- **EAP `/api/v1/eap/auth`** rejects empty, null, and whitespace-only
-  passwords before policy evaluation (previously a mis-sent empty
-  password could bypass local password verification).
-- **EAP event bus** publishes proper `Event(...)` objects (fixes a
-  runtime `TypeError` on auth success/failure).
-- **TOTP enrollment** stores the pending shared secret in
-  `admin_users.pending_totp_secret` after `POST /auth/totp/setup`.
-  `POST /auth/totp/verify` accepts **only** a JSON body `{"code":"…"}`
-  — the `secret` query parameter is removed so secrets never appear in
-  access logs or Referer headers.
-- **`nacoctl backup` / `restore`** pass the PostgreSQL password via
-  `PGPASSWORD` and use discrete `-h/-p/-U/-d` arguments instead of
-  embedding credentials in the `pg_dump` / `psql` argv (visible in
-  `ps` output on Linux).
-- **Device inventory** defaults new rows to `authorized=false`
-  (profiler-discovered endpoints require explicit operator approval).
-  Existing rows are unchanged; Alembic migration `0003_phase0` updates
-  the column default for new inserts.
+- The whole-directory `raddb` mount hid the image's `radiusd.conf`;
+  config files now overlay-mount individually onto the stock config.
+- `${VAR}` was used where FreeRADIUS requires `$ENV{VAR}` (bearer
+  token, REST URL, NAS shared secret).
+- The referenced image tag `3.2-alpine` does not exist on Docker Hub
+  (now pinned to `3.2.10-alpine`).
+- FreeRADIUS and NACo both claimed UDP 1812/1813 under host
+  networking; the sidecar now listens on 2812/2813. Configuration
+  verified with `radiusd -XC` in the container.
+- The bearer token was configured via a `headers { }` block that
+  rlm_rest 3.x silently ignores (every REST call to NACo got 401);
+  the token is now injected per call with
+  `update control { &REST-HTTP-Header += … }` — verified live
+  (FreeRADIUS → `/api/v1/eap/authorize` → 200).
 
 ### Added
 
-- Alembic revision `0003_phase0_totp_pending_device_default`.
-- Regression tests: `tests/test_eap_auth_bypass.py`,
-  `tests/test_totp_setup.py`, `tests/test_cli_backup_secrets.py`,
-  `tests/test_device_default_deny.py`.
+- **NAS client REST API** — `GET/POST/PUT/DELETE /api/v1/nas` (secrets
+  are write-only, never returned). The README example finally matches
+  reality; changes are hot-reloaded by the RADIUS server within 30 s.
+- **Manual device registration** — `POST /api/v1/devices` plus an
+  *Add Device* button on the Devices page, so a MAC can be
+  pre-authorized for MAB without waiting for the passive profiler to
+  discover it. New devices still default to Blocked.
+- Login page and sidebar now use a transparent circular emblem
+  extracted from the logo (no more solid square tile); favicon updated
+  to match.
 
-## [Unreleased]
+### Fixed
+
+- **Every inline button in the admin UI was dead under the nonce-based
+  CSP.** The Phase 1 CSP (`script-src 'self' 'nonce-…'`, no
+  `'unsafe-inline'`) makes browsers refuse inline `onclick=`/`onchange=`/
+  `onsubmit=` attributes — the nonce only whitelists `<script>` blocks.
+  27 handlers across 13 templates were silently broken (Add Condition /
+  Attribute / Rule, deletes, device toggles, secret reveals, delete
+  confirmations). All handlers are now wired via a CSP-safe delegation
+  layer in `base.html` (`data-action` dispatch, `data-confirm` form
+  guard); a regression test bans inline handlers in templates.
+- **Profiler could never sniff in the official container.** The image
+  runs as uid 10001 and `cap_add: NET_RAW` grants the capability to
+  the bounding set only — a non-root process cannot open raw sockets
+  unless the binary carries file capabilities. The Dockerfile now
+  `setcap cap_net_raw+eip` on the Python binary. The profiler also
+  stops retrying (with an actionable message) after repeated
+  permission errors instead of error-looping forever.
+- **First NAS added via the UI was never picked up.** The 30 s NAS
+  hot-reload only ran inside `HandleAuthPacket`, but pyrad drops
+  packets from unknown hosts *before* that handler — so on a fresh
+  install (zero known clients) the reload could never fire and every
+  request was dropped until restart. A background refresh task now
+  reloads DB clients every 30 s regardless of traffic.
 
 ### Added — Phase 1 security hardening
 
@@ -207,6 +243,40 @@ PostgreSQL, or rely on profiler-discovered devices being implicitly trusted.
 - See `SECURITY.md` for the updated threat-model matrix covering
   RBAC, lockout, atomic rate limiting, SSRF, secret redaction,
   HSTS / CSP, TACACS+ caps, and request-ID injection.
+
+## [2.0.1] — 2026-05-12
+
+Critical security hot-fixes (Phase 0). Upgrade promptly if you expose
+EAP REST hooks, use TOTP enrollment via the API, run `nacoctl backup` on
+PostgreSQL, or rely on profiler-discovered devices being implicitly trusted.
+
+### Security
+
+- **EAP `/api/v1/eap/auth`** rejects empty, null, and whitespace-only
+  passwords before policy evaluation (previously a mis-sent empty
+  password could bypass local password verification).
+- **EAP event bus** publishes proper `Event(...)` objects (fixes a
+  runtime `TypeError` on auth success/failure).
+- **TOTP enrollment** stores the pending shared secret in
+  `admin_users.pending_totp_secret` after `POST /auth/totp/setup`.
+  `POST /auth/totp/verify` accepts **only** a JSON body `{"code":"…"}`
+  — the `secret` query parameter is removed so secrets never appear in
+  access logs or Referer headers.
+- **`nacoctl backup` / `restore`** pass the PostgreSQL password via
+  `PGPASSWORD` and use discrete `-h/-p/-U/-d` arguments instead of
+  embedding credentials in the `pg_dump` / `psql` argv (visible in
+  `ps` output on Linux).
+- **Device inventory** defaults new rows to `authorized=false`
+  (profiler-discovered endpoints require explicit operator approval).
+  Existing rows are unchanged; Alembic migration `0003_phase0` updates
+  the column default for new inserts.
+
+### Added
+
+- Alembic revision `0003_phase0_totp_pending_device_default`.
+- Regression tests: `tests/test_eap_auth_bypass.py`,
+  `tests/test_totp_setup.py`, `tests/test_cli_backup_secrets.py`,
+  `tests/test_device_default_deny.py`.
 
 ## [2.0.0] — 2026-05-12
 

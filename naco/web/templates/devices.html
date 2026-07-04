@@ -13,6 +13,9 @@
   <span class="text-muted small">{{ devices|length }} devices (last 200)</span>
   <div class="d-flex gap-2">
     <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="Search…" style="width:200px">
+    <button class="btn btn-info btn-sm text-nowrap" data-bs-toggle="modal" data-bs-target="#addDeviceModal">
+      <i class="bi bi-plus-circle me-1"></i>Add Device
+    </button>
   </div>
 </div>
 
@@ -47,7 +50,8 @@
           <td class="text-muted small">{{ d.last_seen.strftime('%m-%d %H:%M') }}</td>
           <td>
             <button class="btn btn-xs btn-outline-secondary" title="Toggle auth"
-                    onclick="toggleDevice({{ d.id }}, {{ 'false' if d.authorized else 'true' }})">
+                    data-action="toggleDevice" data-id="{{ d.id }}"
+                    data-next="{{ 'false' if d.authorized else 'true' }}">
               {% if d.authorized %}
                 <i class="bi bi-slash-circle"></i>
               {% else %}
@@ -63,6 +67,54 @@
     </table>
   </div>
 </div>
+
+<!-- Add Device Modal — manual registration (pre-authorize a MAC for MAB) -->
+<div class="modal fade" id="addDeviceModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Add Device</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">MAC Address *</label>
+          <input type="text" class="form-control font-monospace" id="d_mac"
+                 placeholder="aa:bb:cc:dd:ee:ff" required>
+        </div>
+        <div class="row g-3 mb-3">
+          <div class="col-7">
+            <label class="form-label">Hostname</label>
+            <input type="text" class="form-control" id="d_hostname" placeholder="printer-3f">
+          </div>
+          <div class="col-5">
+            <label class="form-label">Type</label>
+            <input type="text" class="form-control" id="d_type" placeholder="printer" list="deviceTypes">
+            <datalist id="deviceTypes">
+              <option value="laptop"><option value="workstation"><option value="phone">
+              <option value="printer"><option value="camera"><option value="iot">
+              <option value="server"><option value="unknown">
+            </datalist>
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Notes</label>
+          <input type="text" class="form-control" id="d_notes">
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="d_authorized" checked>
+          <label class="form-check-label" for="d_authorized">
+            Authorised (allow MAB immediately)
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-info" data-action="addDevice">Add Device</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -75,11 +127,33 @@ document.getElementById('searchInput').addEventListener('input', function() {
   });
 });
 
-async function toggleDevice(id, newState) {
-  const r = await fetch('/api/v1/devices/' + id, {
+async function addDevice() {
+  const mac = document.getElementById('d_mac').value.trim();
+  if (!mac) { alert('MAC address is required'); return; }
+  const r = await fetch('/api/v1/devices', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.CSRF_TOKEN},
+    body: JSON.stringify({
+      mac_address: mac,
+      hostname:    document.getElementById('d_hostname').value.trim(),
+      device_type: document.getElementById('d_type').value.trim() || 'unknown',
+      notes:       document.getElementById('d_notes').value.trim(),
+      authorized:  document.getElementById('d_authorized').checked,
+    }),
+  });
+  if (r.ok) {
+    location.reload();
+  } else {
+    const err = await r.json().catch(() => ({}));
+    alert('Error: ' + (err.detail || r.status));
+  }
+}
+
+async function toggleDevice(el) {
+  const r = await fetch('/api/v1/devices/' + el.dataset.id, {
     method: 'PUT',
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.CSRF_TOKEN},
-    body: JSON.stringify({authorized: newState}),
+    body: JSON.stringify({authorized: el.dataset.next === 'true'}),
   });
   if (r.ok) location.reload();
   else alert('Error updating device');

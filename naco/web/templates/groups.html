@@ -45,7 +45,7 @@
           <td class="text-end">
             {% if counts[g.id] == 0 %}
             <form method="post" action="/groups/{{ g.id }}/delete" class="d-inline"
-                  onsubmit="return confirm('Delete group {{ g.name }}?')">
+                  data-confirm="Delete group {{ g.name }}?">
               <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
             </form>
             {% else %}

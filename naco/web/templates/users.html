@@ -40,7 +40,7 @@
           <td class="text-muted">{{ u.last_login.strftime('%Y-%m-%d %H:%M') if u.last_login else '—' }}</td>
           <td>
             <button class="btn btn-sm btn-outline-danger"
-                    onclick="deleteUser({{ u.id }}, '{{ u.username }}')">
+                    data-action="deleteUser" data-id="{{ u.id }}" data-name="{{ u.username }}">
               <i class="bi bi-trash"></i>
             </button>
           </td>
@@ -113,9 +113,9 @@ document.getElementById('addUserForm').addEventListener('submit', async (e) => {
   else { alert('Error: ' + (await r.json()).detail); }
 });
 
-async function deleteUser(id, name) {
-  if (!confirm('Delete user ' + name + '?')) return;
-  const r = await fetch('/api/v1/users/' + id, {
+async function deleteUser(el) {
+  if (!confirm('Delete user ' + el.dataset.name + '?')) return;
+  const r = await fetch('/api/v1/users/' + el.dataset.id, {
     method: 'DELETE',
     headers: {'X-CSRF-Token': window.CSRF_TOKEN},
   });

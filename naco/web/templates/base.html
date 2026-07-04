@@ -17,7 +17,7 @@
 <div class="d-flex">
   <nav class="sidebar d-flex flex-column p-3">
     <a href="/" class="sidebar-brand mb-4 text-decoration-none">
-      <img src="/static/img/logo-128.png" alt="NACo" width="32" height="32" class="me-2 brand-logo">
+      <img src="/static/img/emblem-192.png" alt="NACo" width="32" height="32" class="me-2 brand-logo">
       <span class="fw-bold fs-5 brand-text">NACo</span>
     </a>
 
@@ -107,6 +107,31 @@
     clock.textContent = d.toLocaleTimeString();
   }
   tick(); setInterval(tick, 1000);
+</script>
+<script nonce="{{ csp_nonce() }}">
+  // CSP-safe event wiring. The nonce-based CSP (script-src without
+  // 'unsafe-inline') makes browsers refuse inline on*="" attributes, so
+  // elements declare data-action="fnName" and this delegate invokes the
+  // page-level function with the element. Extra arguments travel as
+  // data-* attributes on the same element.
+  document.addEventListener('click', function(e) {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const fn = window[el.dataset.action];
+    if (typeof fn === 'function') {
+      if (el.tagName === 'A') e.preventDefault();
+      fn(el, e);
+    }
+  });
+  // Forms declare data-confirm="message" instead of an inline onsubmit confirm.
+  document.addEventListener('submit', function(e) {
+    const form = e.target.closest('form[data-confirm]');
+    if (form && !confirm(form.dataset.confirm)) e.preventDefault();
+  });
+  // Shared micro-actions used across pages.
+  window.reloadPage = () => location.reload();
+  // Remove the closest ancestor matching data-target (dynamic editor rows).
+  window.removeRow = (el) => { const t = el.closest(el.dataset.target); if (t) t.remove(); };
 </script>
 {% block scripts %}{% endblock %}
 </body>

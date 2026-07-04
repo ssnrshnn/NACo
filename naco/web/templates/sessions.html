@@ -5,7 +5,7 @@
 {% block content %}
 <div class="mb-3 d-flex justify-content-between">
   <span class="text-muted small">{{ sessions|length }} active sessions</span>
-  <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()">
+  <button class="btn btn-sm btn-outline-secondary" data-action="reloadPage">
     <i class="bi bi-arrow-clockwise me-1"></i>Refresh
   </button>
 </div>
@@ -29,7 +29,7 @@
           <td class="text-muted">{{ (s.bytes_out / 1024)|round(1) }} KB</td>
           <td>
             <button class="btn btn-xs btn-outline-danger" title="Remove session"
-                    onclick="removeSession({{ s.id }})">
+                    data-action="removeSession" data-id="{{ s.id }}">
               <i class="bi bi-x-circle"></i>
             </button>
           </td>
@@ -50,9 +50,9 @@
 
 {% block scripts %}
 <script nonce="{{ csp_nonce() }}">
-async function removeSession(id) {
+async function removeSession(el) {
   if (!confirm('Remove session record?')) return;
-  const r = await fetch('/api/v1/sessions/' + id, {
+  const r = await fetch('/api/v1/sessions/' + el.dataset.id, {
     method: 'DELETE',
     headers: {'X-CSRF-Token': window.CSRF_TOKEN},
   });

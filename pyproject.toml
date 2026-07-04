@@ -49,11 +49,10 @@ include = ["naco*"]
 
 [tool.setuptools.package-data]
 naco = [
-    "config/config.yaml",
     "radius/dictionary",
     "web/templates/*.html",
     "web/static/css/*.css",
-    "web/static/js/*.js",
+    "web/static/img/*.png",
     "portal/templates/*.html",
 ]
 

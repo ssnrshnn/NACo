@@ -30,9 +30,9 @@
                 {% endif %}
               </td>
               <td class="text-end">
-                <form method="post" action="/system/service/{{ svc.name }}/restart" class="d-inline">
-                  <button class="btn btn-sm btn-outline-warning" title="Restart"
-                         onclick="return confirm('Restart {{ svc.name }}?')">
+                <form method="post" action="/system/service/{{ svc.name }}/restart" class="d-inline"
+                      data-confirm="Restart {{ svc.name }}?">
+                  <button class="btn btn-sm btn-outline-warning" title="Restart">
                     <i class="bi bi-arrow-clockwise"></i>
                   </button>
                 </form>

@@ -94,14 +94,22 @@ FreeRADIUS is opt-in and used only for EAP outer-method termination
 ### 60-second launch
 
 ```bash
-git clone https://github.com/ssnrshnn/naco.git
-cd naco
-./quickstart.sh          # generates .env with strong secrets, starts the stack
+curl -fsSL https://raw.githubusercontent.com/ssnrshnn/NACo/main/install.sh | bash
 ```
 
-That's it. `quickstart.sh` prints the generated admin password. Everything
-lives in **one** `docker-compose.yml` at the repository root — no overlay
-files to combine. Prefer doing it by hand?
+That's it. The installer clones the repo and runs `quickstart.sh`, which
+checks prerequisites, generates `.env` with strong secrets plus the EAP
+certificates, pulls the prebuilt image from GHCR (building locally only as
+a fallback), starts the stack, and prints the generated admin password.
+Everything lives in **one** `docker-compose.yml` at the repository root.
+
+Prefer explicit steps?
+
+```bash
+git clone https://github.com/ssnrshnn/NACo.git
+cd NACo
+./quickstart.sh          # or continue fully by hand:
+```
 
 ```bash
 cp .env.example .env     # fill in the REQUIRED values
@@ -120,14 +128,13 @@ Then open:
 ### Optional features (same file, compose profiles)
 
 ```bash
-# Add FreeRADIUS for EAP-TLS / PEAP / EAP-TTLS
-./quickstart.sh --eap            # or: docker compose --profile eap up -d
+# FreeRADIUS 802.1X (EAP-TLS / EAP-TTLS / PEAP) is ON by default — skip it with:
+./quickstart.sh --no-eap
 
 # Add Prometheus + Grafana + Loki + Promtail
-./quickstart.sh --obs            # or: docker compose --profile obs up -d
+./quickstart.sh --obs
 
-# Or pin profiles permanently in .env:
-#   COMPOSE_PROFILES=eap,obs
+# Profiles are pinned in .env:  COMPOSE_PROFILES=eap,obs
 ```
 
 ---
@@ -171,8 +178,8 @@ MikroTik, UniFi, Extreme, Ruckus, HPE, Palo Alto) live in
 
 | Field             | Value                                              |
 | ----------------- | -------------------------------------------------- |
-| Auth Server       | `<naco-host>:1812`                                 |
-| Acct Server       | `<naco-host>:1813`                                 |
+| Auth Server       | `<naco-host>:1812` (PAP/CHAP/MAB) · `:2812` (802.1X/EAP) |
+| Acct Server       | `<naco-host>:1813` · `:2813` (802.1X/EAP)          |
 | Shared Secret     | the value from `radius.clients[].secret`           |
 | CoA Server        | `<naco-host>:3799`                                 |
 | Message-Authenticator | **enabled** (mandatory by default)              |
@@ -200,27 +207,29 @@ tacacs:
 
 ---
 
-## EAP via FreeRADIUS sidecar
+## 802.1X / EAP via FreeRADIUS sidecar
 
 NACo's built-in RADIUS server intentionally **does not** implement EAP —
 that family is large and security-sensitive enough to deserve a dedicated
-project. Enable the optional `eap` profile instead:
-
-```bash
-docker compose --profile eap up -d
-```
-
-The bundled FreeRADIUS container terminates EAP-TLS / PEAP / EAP-TTLS and
-calls NACo back over HTTP for the authorisation decision:
+project. Instead the stack ships a FreeRADIUS sidecar, **enabled by
+default**, that terminates the EAP tunnel on ports **2812/2813** and calls
+NACo back over HTTP for every identity and policy decision:
 
 ```text
-NAS ──RADIUS+EAP──► FreeRADIUS ──REST──► NACo policy engine
-              ◄────RADIUS Accept/Reject─◄────VLAN/policy────
+NAS ──RADIUS+EAP :2812──► FreeRADIUS ──REST──► NACo policy engine
+                  ◄──RADIUS Accept/Reject──◄────VLAN/policy────
 ```
 
-Configuration lives in [`deploy/freeradius/`](deploy/freeradius/). The
-shared bearer token must be set in **both** `eap.bearer_token` (NACo
-config) and `mods-available/rest` (FreeRADIUS).
+`./quickstart.sh` wires everything: bearer token, NAS shared secret, and a
+self-signed CA + server certificate (replace with your PKI for
+production). Supported methods: **EAP-TTLS + PAP**, **PEAP + GTC**, and
+**EAP-TLS**. PEAP-MSCHAPv2 is deliberately unsupported — it requires
+reversible NT password hashes, and NACo stores bcrypt only.
+
+Port split: point 802.1X switches/SSIDs at `2812`, MAB/PAP-only gear at
+`1812` (NACo built-in, Message-Authenticator enforced). Opt out with
+`./quickstart.sh --no-eap` or by removing `eap` from `COMPOSE_PROFILES`
+in `.env`. Details in [`deploy/freeradius/`](deploy/freeradius/).
 
 ---
 
