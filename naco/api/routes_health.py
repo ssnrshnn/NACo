@@ -14,7 +14,27 @@ router = APIRouter(prefix="/api/v1", tags=["Health"])
 
 @router.get("/health")
 async def health_check(db: AsyncSession = Depends(get_db)):
-    """Liveness/readiness probe — returns 200 if the DB is reachable, 503 otherwise."""
+    """Readiness probe (back-compat alias of /health/ready)."""
+    return await health_ready(db)
+
+
+@router.get("/health/live")
+async def health_live():
+    """Liveness probe — 200 whenever the process serves HTTP.
+
+    Deliberately touches no dependency: an orchestrator restarting the
+    container because *Postgres* blipped only makes the outage worse.
+    Point restart-triggering probes here; gate traffic on /health/ready.
+    """
+    from naco import __version__
+
+    return {"status": "alive", "version": __version__}
+
+
+@router.get("/health/ready")
+async def health_ready(db: AsyncSession = Depends(get_db)):
+    """Readiness probe — 200 only when the DB (and Redis, if reachable
+    state is known) can serve requests; 503 otherwise."""
     from naco import __version__
     from naco.config import get_config
 
@@ -26,6 +46,17 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     except Exception:
         db_ok = False
 
+    # Redis is reported but does not gate readiness: an outage degrades
+    # rate limiting / lockout, but authentication still works (the code
+    # falls back to in-process implementations).
+    redis_ok = True
+    try:
+        from naco.core.cache import get_redis
+        r = await get_redis()
+        redis_ok = bool(await r.ping()) if r is not None else False
+    except Exception:
+        redis_ok = False
+
     services = {
         "radius":   cfg.radius.enabled,
         "tacacs":   cfg.tacacs.enabled,
@@ -36,6 +67,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     payload = {
         "status":      "ok" if db_ok else "degraded",
         "database":    "connected" if db_ok else "error",
+        "redis":       "connected" if redis_ok else "degraded",
         "services":    services,
         "server_name": cfg.server.name,
         "version":     __version__,

@@ -106,7 +106,7 @@ services:
       - naco_data:/var/lib/naco
     healthcheck:
       test: ["CMD", "python", "-c",
-        "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health', timeout=3).status==200 else 1)"]
+        "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health/ready', timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
