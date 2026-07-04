@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows are skipped, never overwritten) and every row passes the same
   Pydantic validation as the JSON API. Size-capped (5 MiB / 10 000 rows).
 
+- **Synthetic AAA probes** — `nacoctl test-radius` sends a real PAP
+  Access-Request (Message-Authenticator included) and `nacoctl
+  test-tacacs` a real TACACS+ PAP authentication, classifying the reply
+  as accept / reject / timeout with latency. Designed for monitoring:
+  `--expect any` (default) treats any valid reply as healthy, `--expect
+  accept` validates a credential; exit codes 0/1/2 map to ok / wrong
+  outcome / no response. Secrets default from `radius.clients` /
+  `tacacs.key` config.
+
 - **Encrypted secrets at rest** — NAS shared secrets, TACACS+ keys, and
   admin TOTP seeds are now encrypted with AES-256-GCM before hitting the
   database (`enc:v1:` envelope, new `EncryptedString` column type). The

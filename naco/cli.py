@@ -625,5 +625,94 @@ def rotate_master_key():
                 "NACO_MASTER_KEY_OLD.", fg="green")
 
 
+# ---------------------------------------------------------------------------
+# Synthetic AAA probes (monitoring)
+# ---------------------------------------------------------------------------
+
+def _report_probe(proto: str, outcome: dict, expect: str) -> None:
+    """Print the probe result and exit with a monitoring-friendly code.
+
+    Exit codes: 0 = expectation met, 1 = server answered but with the
+    other outcome, 2 = no/invalid response (server or transport problem).
+    """
+    result = outcome["result"]
+    lat = f" in {outcome['latency_ms']:.1f} ms" if outcome["latency_ms"] is not None else ""
+
+    if result in ("timeout", "error"):
+        click.secho(f"{proto} probe FAILED: {outcome['message']}", fg="red")
+        sys.exit(2)
+
+    ok = expect == "any" or result == expect
+    colour = "green" if ok else "red"
+    click.secho(f"{proto} probe: {outcome['message']}{lat}", fg=colour)
+    if not ok:
+        click.secho(f"expected {expect}, got {result}", fg="red")
+        sys.exit(1)
+
+
+@cli.command("test-radius")
+@click.option("--host", default="127.0.0.1", show_default=True, help="RADIUS server address.")
+@click.option("--port", default=None, type=int, help="Auth port [default: radius.auth_port].")
+@click.option("--secret", default=None,
+              help="Shared secret [default: the radius.clients entry matching --host].")
+@click.option("--username", default="naco-probe", show_default=True)
+@click.option("--password", default="naco-probe", show_default=True)
+@click.option("--timeout", default=3.0, show_default=True, type=float)
+@click.option("--expect", type=click.Choice(["any", "accept", "reject"]), default="any",
+              show_default=True,
+              help="'any' treats every valid reply as healthy (reachability probe); "
+                   "'accept' additionally validates the credential.")
+def test_radius(host, port, secret, username, password, timeout, expect):
+    """Send a synthetic PAP Access-Request and report the outcome.
+
+    An Access-Reject counts as healthy with --expect any: it proves the
+    whole path (socket → parsing → policy engine → reply) works. Exit
+    codes: 0 ok, 1 unexpected auth outcome, 2 no response.
+
+    The probe's source IP must be a registered NAS or the server will
+    ignore the request (127.0.0.1 is registered by quickstart).
+    """
+    cfg = get_config()
+    port = port or cfg.radius.auth_port
+    if secret is None:
+        secret = next((c.secret for c in cfg.radius.clients if c.address == host), None)
+        if secret is None:
+            click.secho(f"no radius.clients entry for {host} — pass --secret", fg="red")
+            sys.exit(2)
+
+    from naco.probe import probe_radius
+    _report_probe("RADIUS", probe_radius(
+        host, port, secret, username=username, password=password, timeout=timeout,
+    ), expect)
+
+
+@cli.command("test-tacacs")
+@click.option("--host", default="127.0.0.1", show_default=True, help="TACACS+ server address.")
+@click.option("--port", default=None, type=int, help="TCP port [default: tacacs.port].")
+@click.option("--key", default=None,
+              help="Shared key [default: the tacacs.clients entry matching --host, else tacacs.key].")
+@click.option("--username", default="naco-probe", show_default=True)
+@click.option("--password", default="naco-probe", show_default=True)
+@click.option("--timeout", default=3.0, show_default=True, type=float)
+@click.option("--expect", type=click.Choice(["any", "accept", "reject"]), default="any",
+              show_default=True)
+def test_tacacs(host, port, key, username, password, timeout, expect):
+    """Send a synthetic TACACS+ PAP authentication and report the outcome.
+
+    Same contract as test-radius: with --expect any, a FAIL reply is
+    healthy (the server answered and evaluated the login). Exit codes:
+    0 ok, 1 unexpected auth outcome, 2 no response.
+    """
+    cfg = get_config()
+    port = port or cfg.tacacs.port
+    if key is None:
+        key = next((c.key for c in cfg.tacacs.clients if c.address == host), cfg.tacacs.key)
+
+    from naco.probe import probe_tacacs
+    _report_probe("TACACS+", probe_tacacs(
+        host, port, key, username=username, password=password, timeout=timeout,
+    ), expect)
+
+
 if __name__ == "__main__":
     cli()

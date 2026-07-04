@@ -301,6 +301,24 @@ Import columns: users `username,password,email,full_name,group,enabled`
 chars). Every row is validated by the same Pydantic models as the JSON
 API.
 
+**Synthetic AAA probes** exercise the full protocol path (socket →
+parsing → policy engine → reply) — what a NAS actually experiences,
+beyond what `/health/*` can see:
+
+```bash
+docker compose exec naco nacoctl test-radius            # PAP Access-Request
+docker compose exec naco nacoctl test-tacacs            # TACACS+ PAP login
+# RADIUS probe: Access-Reject in 4.2 ms
+```
+
+With the default `--expect any`, a Reject is healthy — it proves the
+server parsed the request and evaluated policy. Use
+`--expect accept --username u --password p` to also validate a real
+credential. Exit codes are monitoring-friendly: `0` expectation met,
+`1` server answered with the other outcome, `2` no response. The probe's
+source IP must be a registered NAS (the in-container `127.0.0.1` works
+out of the box once a localhost NAS exists).
+
 ---
 
 ## Backup & restore
