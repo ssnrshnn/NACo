@@ -17,6 +17,7 @@ Each resource domain lives in its own ``routes_*.py`` module for maintainability
     routes_sessions.py     — /sessions (active RADIUS sessions + CoA)
     routes_dashboard.py    — /dashboard stats, /guests
     routes_command_sets.py — /command-sets CRUD (TACACS+)
+    routes_csv.py          — CSV import/export (users, devices, NAS)
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from fastapi import APIRouter
 
 from naco.api.routes_auth import router as auth_router
 from naco.api.routes_command_sets import router as command_sets_router
+from naco.api.routes_csv import router as csv_router
 from naco.api.routes_dashboard import router as dashboard_router
 from naco.api.routes_devices import router as devices_router
 from naco.api.routes_groups import router as groups_router
@@ -38,6 +40,8 @@ router = APIRouter()
 
 router.include_router(health_router)
 router.include_router(auth_router)
+# Before the resource routers: /users/export.csv must win over /users/{user_id}.
+router.include_router(csv_router)
 router.include_router(users_router)
 router.include_router(groups_router)
 router.include_router(devices_router)
