@@ -253,3 +253,49 @@ def get_config() -> AppConfig:
         eap.setdefault("enabled", True)
 
     return AppConfig.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Production-secret validation
+# ---------------------------------------------------------------------------
+
+# Known placeholder values from the model defaults / .env.example. Any of
+# these in a non-debug deployment means the operator skipped quickstart.sh
+# and never rotated the secret.
+_PLACEHOLDER_VALUES = {
+    "change_me_session_secret",
+    "change_me_api_secret",
+    "change_me_csrf_secret",
+    "NACo@admin1",
+    "tacacs_secret",
+}
+
+
+def _is_placeholder(value: str) -> bool:
+    return value in _PLACEHOLDER_VALUES or value.startswith("REPLACE_ME")
+
+
+def check_production_secrets(cfg: AppConfig) -> list[str]:
+    """Return a list of placeholder-secret problems (empty = all good).
+
+    Callers decide severity: ``naco.main`` refuses to start when
+    ``server.debug`` is false; ``nacoctl check-config`` prints warnings.
+    """
+    problems: list[str] = []
+    for name, value in (
+        ("server.session_secret", cfg.server.session_secret),
+        ("server.api_secret", cfg.server.api_secret),
+        ("server.csrf_secret", cfg.server.csrf_secret),
+        ("server.admin_password", cfg.server.admin_password),
+    ):
+        if _is_placeholder(value):
+            problems.append(f"{name} is still the placeholder default")
+    if cfg.tacacs.enabled and _is_placeholder(cfg.tacacs.key):
+        problems.append("tacacs.key is still the placeholder default")
+    for client in cfg.tacacs.clients if cfg.tacacs.enabled else []:
+        if _is_placeholder(client.key):
+            problems.append(f"tacacs.clients[{client.address}].key is a placeholder")
+    for client in cfg.radius.clients if cfg.radius.enabled else []:
+        if _is_placeholder(client.secret):
+            problems.append(f"radius.clients[{client.name}].secret is a placeholder")
+    return problems

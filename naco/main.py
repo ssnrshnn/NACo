@@ -10,10 +10,36 @@ import asyncio
 
 import uvicorn
 
-from naco.config import get_config
+from naco.config import check_production_secrets, get_config
 from naco.core import get_logger, setup_logging
 
 log = get_logger(__name__)
+
+
+def _enforce_production_secrets() -> None:
+    """Refuse to boot with placeholder secrets unless ``server.debug`` is on.
+
+    Placeholder session/API/CSRF secrets make every cookie and JWT forgeable;
+    the default admin password is public knowledge. quickstart.sh generates
+    real values — a placeholder in production means setup was skipped.
+    """
+    cfg = get_config()
+    problems = check_production_secrets(cfg)
+    if not problems:
+        return
+    if cfg.server.debug:
+        for p in problems:
+            log.warning("placeholder secret (allowed in debug mode): %s", p)
+        return
+    for p in problems:
+        log.critical("placeholder secret: %s", p)
+    log.critical(
+        "Refusing to start with placeholder secrets while server.debug is "
+        "false. Run ./quickstart.sh to generate a proper .env, or set real "
+        "values via NACO_SESSION_SECRET / NACO_API_SECRET / NACO_CSRF_SECRET "
+        "/ NACO_ADMIN_PASSWORD and config.yaml."
+    )
+    raise SystemExit(1)
 
 
 async def _serve() -> None:
@@ -45,6 +71,7 @@ async def _serve() -> None:
 
 def main() -> None:
     setup_logging()
+    _enforce_production_secrets()
     try:
         asyncio.run(_serve())
     except KeyboardInterrupt:

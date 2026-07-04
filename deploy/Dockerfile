@@ -47,9 +47,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #   • postgresql-client — pg_dump/psql for `nacoctl backup|restore`
 #   • libpcap0.8  — Scapy DHCP/ARP sniffer (only effective with NET_RAW)
 #   • tini        — PID-1 zombie reaper / signal proxy
+#   • age         — encrypted backups (`nacoctl backup --age-recipient`)
+#   • postgresql-client-16 from PGDG — must match the compose `postgres:16`
+#     service; bookworm's own client is v15 and pg_dump aborts on a newer
+#     server ("server version mismatch").
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libpq5 postgresql-client libpcap0.8 tini ca-certificates libcap2-bin \
+      libpq5 libpcap0.8 tini ca-certificates libcap2-bin age \
+ && python3 -c "import urllib.request; urllib.request.urlretrieve('https://www.postgresql.org/media/keys/ACCC4CF8.asc', '/usr/share/keyrings/pgdg.asc')" \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-16 \
  && rm -rf /var/lib/apt/lists/*
 
 # The profiler sniffs DHCP/ARP with raw sockets. `cap_add: NET_RAW` on the

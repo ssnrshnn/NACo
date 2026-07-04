@@ -116,30 +116,15 @@ def check_config(deep: bool):
     click.echo(f"  Portal      : {'enabled' if cfg.portal.enabled else 'disabled'}")
     click.echo(f"  Profiler    : {'enabled' if cfg.profiler.enabled else 'disabled'}")
 
-    _PLACEHOLDERS = {
-        "change_me", "",
-        "CHANGE_ME_session_secret_32_bytes_hex",
-        "CHANGE_ME_api_secret_32_bytes_hex",
-        "CHANGE_ME_csrf_secret_32_bytes_hex",
-        "change_me_session_secret", "change_me_api_secret", "change_me_csrf_secret",
-    }
-    has_warnings = False
-    if cfg.server.session_secret in _PLACEHOLDERS:
-        click.secho("  WARNING: server.session_secret is still a placeholder!", fg="yellow")
-        has_warnings = True
-    if cfg.server.api_secret in _PLACEHOLDERS:
-        click.secho("  WARNING: server.api_secret is still a placeholder!", fg="yellow")
-        has_warnings = True
-    if cfg.server.csrf_secret in _PLACEHOLDERS:
-        click.secho("  WARNING: server.csrf_secret is still a placeholder!", fg="yellow")
-        has_warnings = True
-    if cfg.server.admin_password in ("NACo@admin1", "CHANGE_ME_initial_admin_password", "admin"):
-        click.secho("  WARNING: server.admin_password is still a placeholder!", fg="yellow")
-        has_warnings = True
+    from naco.config import check_production_secrets
 
-    if not cfg.server.debug and has_warnings:
+    problems = check_production_secrets(cfg)
+    for p in problems:
+        click.secho(f"  WARNING: {p}", fg="yellow")
+    if problems and not cfg.server.debug:
         click.secho(
-            "  ERROR: placeholder secrets with debug=False will prevent startup!",
+            "  ERROR: placeholder secrets with debug=False — the server will "
+            "refuse to start. Run ./quickstart.sh or set real values.",
             fg="red",
         )
 
@@ -219,16 +204,65 @@ def postgresql_cli_env_and_argv(async_or_sync_url: str) -> tuple[dict[str, str],
     return env, common
 
 
+def _age_encrypt(data: bytes, recipients: tuple[str, ...]) -> bytes:
+    """Encrypt ``data`` to one or more age recipients (X25519 or SSH keys)."""
+    import subprocess
+
+    argv = ["age", "--encrypt"]
+    for r in recipients:
+        argv += ["--recipient", r]
+    try:
+        proc = subprocess.run(argv, input=data, capture_output=True, check=True)
+    except FileNotFoundError:
+        click.secho("age not found — install it from https://age-encryption.org "
+                    "(package `age` on most distros).", fg="red")
+        sys.exit(1)
+    except subprocess.CalledProcessError as exc:
+        click.secho(f"age encryption failed: {exc.stderr.decode(errors='replace')}", fg="red")
+        sys.exit(1)
+    return proc.stdout
+
+
+def _age_decrypt(data: bytes, identity: str) -> bytes:
+    """Decrypt age-encrypted ``data`` with an identity (private key) file."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["age", "--decrypt", "--identity", identity],
+            input=data, capture_output=True, check=True,
+        )
+    except FileNotFoundError:
+        click.secho("age not found — install it from https://age-encryption.org "
+                    "(package `age` on most distros).", fg="red")
+        sys.exit(1)
+    except subprocess.CalledProcessError as exc:
+        click.secho(f"age decryption failed: {exc.stderr.decode(errors='replace')}", fg="red")
+        sys.exit(1)
+    return proc.stdout
+
+
 @cli.command("backup")
 @click.option(
     "--output", "-o", required=True, type=click.Path(),
-    help="Backup file (e.g. backup.sql.gz for Postgres, backup.db for SQLite).",
+    help="Backup file (e.g. backup.sql.gz for Postgres, backup.db for SQLite; "
+         "add .age when using --age-recipient).",
 )
-def backup(output: str):
+@click.option(
+    "--age-recipient", "-r", "age_recipients", multiple=True,
+    help="Encrypt the backup to this age public key (repeatable; X25519 "
+         "'age1…' or an SSH public key). Decrypt on restore with "
+         "--age-identity, or manually: age -d -i key.txt backup.age",
+)
+def backup(output: str, age_recipients: tuple[str, ...]):
     """Snapshot the database to a portable file.
 
     PostgreSQL → invokes ``pg_dump`` and gzips the result.
     SQLite     → copies the .db file (and any -wal/-shm sidecars).
+
+    With ``--age-recipient`` the snapshot is encrypted with age
+    (https://age-encryption.org) so backups at rest do not leak
+    credentials — generate a key pair with ``age-keygen``.
     """
     import gzip
     import subprocess
@@ -237,12 +271,22 @@ def backup(output: str):
     backend = _backend(cfg.database.url)
     dst = Path(output)
     dst.parent.mkdir(parents=True, exist_ok=True)
+    if age_recipients and not dst.name.endswith(".age"):
+        click.secho(f"  note: output is age-encrypted; consider naming it {dst.name}.age",
+                    fg="yellow")
 
     if backend == "sqlite":
         src = _sqlite_path_from_url(cfg.database.url)
         if not src.exists():
             click.secho(f"Database file not found: {src}", fg="red")
             sys.exit(1)
+        if age_recipients:
+            # Single self-contained encrypted artifact: db + sidecars would
+            # be inconsistent anyway unless the server is stopped, so only
+            # the main file is captured (same caveat as the plain copy).
+            dst.write_bytes(_age_encrypt(src.read_bytes(), age_recipients))
+            click.secho(f"Encrypted SQLite snapshot written to {dst}", fg="green")
+            return
         shutil.copy2(src, dst)
         for suffix in ("-wal", "-shm"):
             wal = src.with_name(src.name + suffix)
@@ -264,10 +308,14 @@ def backup(output: str):
         except subprocess.CalledProcessError as exc:
             click.secho(f"pg_dump failed: {exc.stderr.decode(errors='replace')}", fg="red")
             sys.exit(1)
-        opener = gzip.open if str(dst).endswith(".gz") else open
-        with opener(dst, "wb") as f:
-            f.write(proc.stdout)
-        click.secho(f"PostgreSQL snapshot written to {dst}", fg="green")
+        data = proc.stdout
+        if ".gz" in dst.suffixes or str(dst).endswith(".gz"):
+            data = gzip.compress(data)
+        if age_recipients:
+            data = _age_encrypt(data, age_recipients)
+        dst.write_bytes(data)
+        label = "Encrypted PostgreSQL" if age_recipients else "PostgreSQL"
+        click.secho(f"{label} snapshot written to {dst}", fg="green")
         return
 
     click.secho(f"Unsupported database backend: {backend or 'unknown'}", fg="red")
@@ -277,8 +325,10 @@ def backup(output: str):
 @cli.command("restore")
 @click.option("--input", "-i", "input_file", required=True, type=click.Path(exists=True),
               help="Backup file to restore.")
+@click.option("--age-identity", type=click.Path(exists=True), default=None,
+              help="age identity (private key) file for .age-encrypted backups.")
 @click.confirmation_option(prompt="This will overwrite the current database. Continue?")
-def restore(input_file: str):
+def restore(input_file: str, age_identity: str | None):
     """Restore from a snapshot created by `nacoctl backup`."""
     import gzip
     import subprocess
@@ -286,12 +336,27 @@ def restore(input_file: str):
     cfg = get_config()
     backend = _backend(cfg.database.url)
 
+    # Undo the encryption layer first, then treat the inner name normally
+    # (backup.sql.gz.age → backup.sql.gz).
+    inner_name = input_file
+    data: bytes | None = None
+    if input_file.endswith(".age"):
+        if not age_identity:
+            click.secho("Input is age-encrypted — pass --age-identity <keyfile> "
+                        "(or decrypt manually: age -d -i key.txt).", fg="red")
+            sys.exit(1)
+        data = _age_decrypt(Path(input_file).read_bytes(), age_identity)
+        inner_name = input_file[: -len(".age")]
+
     if backend == "sqlite":
         _SQLITE_MAGIC = b"SQLite format 3\000"
         try:
-            with open(input_file, "rb") as f:
-                header = f.read(16)
-            if header[:16] != _SQLITE_MAGIC:
+            if data is not None:
+                header = data[:16]
+            else:
+                with open(input_file, "rb") as f:
+                    header = f.read(16)
+            if header != _SQLITE_MAGIC:
                 click.secho("Input file is not a valid SQLite database.", fg="red")
                 sys.exit(1)
         except OSError as exc:
@@ -300,16 +365,20 @@ def restore(input_file: str):
 
         dst = _sqlite_path_from_url(cfg.database.url)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(input_file, dst)
+        if data is not None:
+            dst.write_bytes(data)
+        else:
+            shutil.copy2(input_file, dst)
         click.secho(f"Restored SQLite database from {input_file}", fg="green")
         return
 
     if backend == "postgresql":
         env, common = postgresql_cli_env_and_argv(cfg.database.url)
-        opener = gzip.open if input_file.endswith(".gz") else open
         try:
-            with opener(input_file, "rb") as f:
-                data = f.read()
+            if data is None:
+                data = Path(input_file).read_bytes()
+            if inner_name.endswith(".gz"):
+                data = gzip.decompress(data)
             subprocess.run(
                 ["psql", "--quiet", *common],
                 input=data, check=True, env=env,

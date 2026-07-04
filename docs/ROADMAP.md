@@ -8,10 +8,9 @@ Anything already shipped lives in [`CHANGELOG.md`](../CHANGELOG.md).
 Shipped in the encrypted-secrets work (post-2.1.0): `EncryptedString`
 (AES-256-GCM) for NAS secrets / TACACS+ keys / TOTP seeds, master key via
 `NACO_MASTER_KEY`(`_FILE`), lazy encrypt-on-write plus
-`nacoctl encrypt-secrets`, and `nacoctl rotate-master-key`. Remaining:
-
-- Refuse to start with placeholder secrets when `server.debug=false`
-- Encrypted backups: `nacoctl backup --age-recipient <pubkey>`
+`nacoctl encrypt-secrets`, `nacoctl rotate-master-key`, placeholder-secret
+startup refusal (`server.debug=false`), and age-encrypted backups
+(`nacoctl backup --age-recipient` / `restore --age-identity`).
 
 - API tokens with scopes (`/api/v1/tokens`)
 - Health split: `/health/live` vs `/health/ready`

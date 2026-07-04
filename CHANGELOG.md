@@ -23,8 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Without a key configured behaviour is unchanged (plaintext, with a
   startup warning).
 
+- **Placeholder-secret startup guard** — with `server.debug: false`
+  (the default), NACo now refuses to boot while
+  `session_secret`/`api_secret`/`csrf_secret`/`admin_password`, the
+  TACACS+ key, or any RADIUS/TACACS client secret still carries a
+  placeholder default. `nacoctl check-config` reports the same findings
+  as warnings.
+- **Encrypted backups** — `nacoctl backup --age-recipient <age1…|ssh-pub>`
+  (repeatable) encrypts the snapshot with
+  [age](https://age-encryption.org);
+  `nacoctl restore --age-identity <keyfile>` decrypts transparently.
+  The `age` binary ships in the container image.
+
 ### Fixed
 
+- `nacoctl backup` was broken against the default compose stack: the
+  image shipped bookworm's `pg_dump` 15, which aborts on the
+  `postgres:16` service ("server version mismatch"). The image now
+  installs `postgresql-client-16` from PGDG.
+- README documented `nacoctl backup --out/--in`; real options are
+  `--output`/`--input`.
 - `nacoctl db-upgrade` failed inside the official container: it only
   looked for `alembic.ini` next to a source checkout, and Alembic's
   online mode required a synchronous DB driver (psycopg2) that the
