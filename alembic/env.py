@@ -52,17 +52,40 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _do_run_migrations(connection) -> None:
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        render_as_batch=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode — connect to the DB."""
-    connectable = create_engine(_sync_url(), poolclass=pool.NullPool)
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            render_as_batch=True,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    """Run migrations in 'online' mode — connect to the DB.
+
+    Prefer a sync engine when the driver is available (psycopg2, sqlite3);
+    otherwise fall back to the app's async drivers (asyncpg / aiosqlite) so
+    migrations also run inside the production container, which ships only
+    the async stack.
+    """
+    try:
+        connectable = create_engine(_sync_url(), poolclass=pool.NullPool)
+        with connectable.connect() as connection:
+            _do_run_migrations(connection)
+        return
+    except ModuleNotFoundError:
+        pass  # sync driver not installed — use the async engine
+
+    async_engine = create_async_engine(get_config().database.url, poolclass=pool.NullPool)
+
+    async def _run() -> None:
+        async with async_engine.connect() as connection:
+            await connection.run_sync(_do_run_migrations)
+        await async_engine.dispose()
+
+    asyncio.run(_run())
 
 
 if context.is_offline_mode():

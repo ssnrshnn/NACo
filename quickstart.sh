@@ -60,6 +60,7 @@ if [[ ! -f .env ]]; then
         -e "s|^NACO_API_SECRET=.*|NACO_API_SECRET=$(rand 32)|" \
         -e "s|^NACO_CSRF_SECRET=.*|NACO_CSRF_SECRET=$(rand 32)|" \
         -e "s|^NACO_ADMIN_PASSWORD=.*|NACO_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
+        -e "s|^NACO_MASTER_KEY=.*|NACO_MASTER_KEY=$(rand 32)|" \
         -e "s|^NACO_EAP_BEARER_TOKEN=.*|NACO_EAP_BEARER_TOKEN=$(rand 32)|" \
         -e "s|^NACO_FREERADIUS_SHARED_SECRET=.*|NACO_FREERADIUS_SHARED_SECRET=$(rand 32)|" \
         -e "s|^#*COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${PROFILES}|" \
@@ -73,6 +74,13 @@ else
         sed -i "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${PROFILES}|" .env
     elif [[ -n "$PROFILES" ]]; then
         printf '\nCOMPOSE_PROFILES=%s\n' "$PROFILES" >> .env
+    fi
+    # Upgrades from < v2.2: add the secrets-at-rest master key if missing.
+    if ! grep -qE "^NACO_MASTER_KEY=" .env; then
+        echo "==> Adding NACO_MASTER_KEY to .env (encrypts stored secrets at rest)"
+        printf '\nNACO_MASTER_KEY=%s\n' "$(rand 32)" >> .env
+        echo "    Run 'docker compose exec naco nacoctl encrypt-secrets' after start"
+        echo "    to encrypt existing rows. BACK THIS KEY UP with your .env."
     fi
 fi
 

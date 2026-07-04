@@ -24,6 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from naco.db.database import Base
+from naco.db.types import EncryptedString
 
 
 def _utcnow() -> datetime:
@@ -328,12 +329,14 @@ class AdminUser(Base):
         server_default=AdminRole.OPERATOR.value,
     )
     enabled: Mapped[bool]       = mapped_column(Boolean, default=True)
-    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    totp_secret: Mapped[str | None] = mapped_column(
+        EncryptedString(512), nullable=True, default=None,
+    )
     # Provisioning secret before the user confirms the first TOTP code.
     # Never send this in URL query params (Phase 0) — only read server-side
     # in ``POST /auth/totp/verify`` after ``POST /auth/totp/setup`` stored it.
     pending_totp_secret: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, default=None,
+        EncryptedString(512), nullable=True, default=None,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
@@ -355,7 +358,7 @@ class NasClient(Base):
     id: Mapped[int]           = mapped_column(Integer, primary_key=True)
     name: Mapped[str]         = mapped_column(String(64), unique=True, nullable=False)
     ip_address: Mapped[str]   = mapped_column(String(45), nullable=False, index=True)
-    secret: Mapped[str]       = mapped_column(String(128), nullable=False)
+    secret: Mapped[str]       = mapped_column(EncryptedString(512), nullable=False)
     description: Mapped[str]  = mapped_column(String(255), default="")
     enabled: Mapped[bool]     = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -377,7 +380,7 @@ class TacacsClient(Base):
     id: Mapped[int]           = mapped_column(Integer, primary_key=True)
     name: Mapped[str]         = mapped_column(String(64), unique=True, nullable=False)
     ip_address: Mapped[str]   = mapped_column(String(45), nullable=False, index=True)
-    key: Mapped[str]          = mapped_column(String(128), nullable=False)
+    key: Mapped[str]          = mapped_column(EncryptedString(512), nullable=False)
     description: Mapped[str]  = mapped_column(String(255), default="")
     enabled: Mapped[bool]     = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(

@@ -73,7 +73,7 @@ services:
     logging: *default_logging
 
   naco:
-    image: ${NACO_IMAGE:-ghcr.io/ssnrshnn/naco:2.0.0}
+    image: ${NACO_IMAGE:-ghcr.io/ssnrshnn/naco:latest}
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -93,6 +93,9 @@ services:
       NACO_API_SECRET:      ${NACO_API_SECRET:?NACO_API_SECRET is required}
       NACO_CSRF_SECRET:     ${NACO_CSRF_SECRET:?NACO_CSRF_SECRET is required}
       NACO_ADMIN_PASSWORD:  ${NACO_ADMIN_PASSWORD:?NACO_ADMIN_PASSWORD is required}
+      # Encrypts NAS secrets / TACACS+ keys / TOTP seeds at rest (optional
+      # but strongly recommended — quickstart.sh generates one).
+      NACO_MASTER_KEY:      ${NACO_MASTER_KEY:-}
       # Setting the token auto-enables the /api/v1/eap/* endpoints for the
       # FreeRADIUS sidecar. Empty = EAP endpoints refuse all requests.
       NACO_EAP_BEARER_TOKEN: ${NACO_EAP_BEARER_TOKEN:-}

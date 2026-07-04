@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Encrypted secrets at rest** — NAS shared secrets, TACACS+ keys, and
+  admin TOTP seeds are now encrypted with AES-256-GCM before hitting the
+  database (`enc:v1:` envelope, new `EncryptedString` column type). The
+  master key comes from `NACO_MASTER_KEY` (base64 or hex, 32 bytes) or a
+  `NACO_MASTER_KEY_FILE` mount; `quickstart.sh` generates one on fresh
+  installs and adds one on upgrades. Reads accept both encrypted and
+  legacy plaintext values, so enabling encryption is zero-downtime:
+  rows encrypt on next write, or all at once with
+  `nacoctl encrypt-secrets` (idempotent). `nacoctl rotate-master-key`
+  re-encrypts everything under a new key (`NACO_MASTER_KEY_OLD` → new
+  `NACO_MASTER_KEY`). Migration `0007` widens the affected columns.
+  Without a key configured behaviour is unchanged (plaintext, with a
+  startup warning).
+
+### Fixed
+
+- `nacoctl db-upgrade` failed inside the official container: it only
+  looked for `alembic.ini` next to a source checkout, and Alembic's
+  online mode required a synchronous DB driver (psycopg2) that the
+  image doesn't ship. The command now also finds `/app/alembic.ini`
+  and falls back to the app's async drivers (asyncpg / aiosqlite).
+- `docker-compose.yml` default image tag pointed at the never-published
+  `:2.0.0`; now `:latest`.
+
 ## [2.1.0] — 2026-07-04
 
 ### Added

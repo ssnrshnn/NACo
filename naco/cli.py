@@ -338,11 +338,19 @@ def db_upgrade():
         click.secho("alembic is not installed. Run: pip install alembic", fg="red")
         sys.exit(1)
 
-    # Locate alembic.ini relative to this file
-    project_root = Path(__file__).resolve().parent.parent
-    ini_path = project_root / "alembic.ini"
-    if not ini_path.exists():
-        click.secho(f"alembic.ini not found at {ini_path}", fg="red")
+    # Locate alembic.ini: next to a source checkout of this package, in the
+    # container WORKDIR (/app), or in the current directory.
+    candidates = [
+        Path(__file__).resolve().parent.parent / "alembic.ini",
+        Path("/app/alembic.ini"),
+        Path.cwd() / "alembic.ini",
+    ]
+    ini_path = next((p for p in candidates if p.exists()), None)
+    if ini_path is None:
+        click.secho(
+            "alembic.ini not found (looked in: "
+            + ", ".join(str(p) for p in candidates) + ")", fg="red",
+        )
         sys.exit(1)
 
     alembic_cfg = Config(str(ini_path))
@@ -443,6 +451,109 @@ def rehash_passwords(dry_run: bool, target_cost: int):
                 )
 
     asyncio.run(_scan())
+
+
+# ---------------------------------------------------------------------------
+# Secrets-at-rest management (see naco/core/secrets.py)
+# ---------------------------------------------------------------------------
+
+# (table, column) pairs stored via the EncryptedString type. Raw SQL is used
+# on purpose: the ORM would transparently decrypt on read and re-encrypt on
+# write, hiding which form is actually on disk.
+_ENCRYPTED_COLUMNS = [
+    ("nas_clients", "secret"),
+    ("tacacs_clients", "key"),
+    ("admin_users", "totp_secret"),
+    ("admin_users", "pending_totp_secret"),
+]
+
+
+async def _rewrite_secrets(transform) -> dict[str, int]:
+    """Apply ``transform(stored_value) -> new_value | None`` to every secret."""
+    from sqlalchemy import text
+
+    from naco.db.database import _get_session_factory, init_db
+
+    await init_db()
+    factory = _get_session_factory()
+    counts: dict[str, int] = {}
+    async with factory() as db:
+        for table, col in _ENCRYPTED_COLUMNS:
+            rows = (await db.execute(
+                text(f"SELECT id, {col} FROM {table} WHERE {col} IS NOT NULL")  # noqa: S608
+            )).all()
+            changed = 0
+            for rid, stored in rows:
+                new = transform(stored)
+                if new is not None and new != stored:
+                    await db.execute(
+                        text(f"UPDATE {table} SET {col} = :v WHERE id = :id"),  # noqa: S608
+                        {"v": new, "id": rid},
+                    )
+                    changed += 1
+            counts[f"{table}.{col}"] = changed
+        await db.commit()
+    return counts
+
+
+@cli.command("encrypt-secrets")
+def encrypt_secrets():
+    """Encrypt all plaintext NAS secrets, TACACS+ keys and TOTP seeds in place.
+
+    Requires NACO_MASTER_KEY (or NACO_MASTER_KEY_FILE). Values that are
+    already encrypted are left untouched, so the command is idempotent.
+    """
+    from naco.core import secrets as sx
+
+    key = sx.get_master_key()
+    if key is None:
+        click.secho("NACO_MASTER_KEY is not set — nothing to encrypt with. "
+                    "Generate one with `openssl rand -base64 32`.", fg="red")
+        sys.exit(1)
+
+    def _transform(stored: str) -> str | None:
+        return None if sx.is_encrypted(stored) else sx.encrypt(stored, key)
+
+    counts = asyncio.run(_rewrite_secrets(_transform))
+    total = sum(counts.values())
+    for loc, n in counts.items():
+        click.echo(f"    {loc}: {n} encrypted")
+    click.secho(f"Done — {total} value(s) encrypted.", fg="green")
+
+
+@cli.command("rotate-master-key")
+def rotate_master_key():
+    """Re-encrypt every stored secret under a new master key.
+
+    Set NACO_MASTER_KEY to the NEW key and NACO_MASTER_KEY_OLD to the key
+    currently protecting the data, then run this command. Plaintext values
+    (from before encryption was enabled) are encrypted under the new key too.
+    """
+    import os as _os
+
+    from naco.core import secrets as sx
+
+    new_key = sx.get_master_key()
+    if new_key is None:
+        click.secho("NACO_MASTER_KEY (the new key) is not set.", fg="red")
+        sys.exit(1)
+    old_material = _os.environ.get("NACO_MASTER_KEY_OLD")
+    if not old_material:
+        click.secho("NACO_MASTER_KEY_OLD (the current key) is not set.", fg="red")
+        sys.exit(1)
+    old_key = sx._parse_key(old_material)
+
+    def _transform(stored: str) -> str:
+        plaintext = sx.decrypt(stored, old_key) if sx.is_encrypted(stored) else stored
+        return sx.encrypt(plaintext, new_key)
+
+    counts = asyncio.run(_rewrite_secrets(_transform))
+    total = sum(counts.values())
+    for loc, n in counts.items():
+        click.echo(f"    {loc}: {n} re-encrypted")
+    click.secho(f"Done — {total} value(s) now under the new key. "
+                "Update NACO_MASTER_KEY everywhere and drop "
+                "NACO_MASTER_KEY_OLD.", fg="green")
 
 
 if __name__ == "__main__":
