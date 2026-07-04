@@ -5,12 +5,40 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from naco.api._audit import audit
 from naco.api.auth import require_role
-from naco.api.schemas import DeviceOut, DeviceUpdate, StatusResponse
+from naco.api.schemas import DeviceCreate, DeviceOut, DeviceUpdate, StatusResponse
 from naco.db import get_db
 from naco.db.models import AdminRole, AdminUser, Device
 
 router = APIRouter(prefix="/api/v1", tags=["Devices"])
+
+
+@router.post("/devices", response_model=DeviceOut, status_code=201)
+async def create_device(
+    body: DeviceCreate,
+    db:    AsyncSession = Depends(get_db),
+    admin: AdminUser    = Depends(require_role(AdminRole.OPERATOR)),
+):
+    """Manual device registration — pre-authorize a MAC for MAB without
+    waiting for the passive profiler to discover it."""
+    existing = (await db.execute(
+        select(Device).where(Device.mac_address == body.mac_address)
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(409, f"Device {body.mac_address} already exists")
+    dev = Device(
+        mac_address = body.mac_address,
+        hostname    = body.hostname,
+        device_type = body.device_type,
+        notes       = body.notes,
+        authorized  = body.authorized,
+    )
+    db.add(dev)
+    await audit(db, admin, "CREATE", "device", "", f"mac={body.mac_address} authorized={body.authorized}")
+    await db.commit()
+    await db.refresh(dev)
+    return DeviceOut.model_validate(dev)
 
 
 @router.get("/devices", response_model=list[DeviceOut])

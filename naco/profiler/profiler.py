@@ -186,6 +186,7 @@ class DeviceProfiler:
         iface = self._resolve_iface()
         backoff = 1.0
         max_backoff = 60.0
+        perm_errors = 0
         while self._running:
             try:
                 # Use timeout=1.0 so the loop re-checks self._running at least once per
@@ -199,9 +200,24 @@ class DeviceProfiler:
                     timeout=1.0,
                 )
                 backoff = 1.0  # reset on clean iteration
+                perm_errors = 0
             except Exception as exc:
                 if not self._running:
                     break
+                # EPERM never heals by retrying — the process lacks
+                # CAP_NET_RAW (container without NET_RAW / non-root binary
+                # without file caps). Say what to fix and stop looping.
+                if isinstance(exc, PermissionError) or "not permitted" in str(exc).lower():
+                    perm_errors += 1
+                    if perm_errors >= 3:
+                        log.error(
+                            "Device profiler disabled: no permission for raw sockets "
+                            "on %r. Grant CAP_NET_RAW (docker: cap_add NET_RAW + "
+                            "setcap'd python, both included in the official image) "
+                            "or set profiler.enabled: false to silence this.",
+                            iface,
+                        )
+                        return
                 log.error("Profiler sniffer error (restarting in %.0fs): %s", backoff, exc)
                 import time
                 time.sleep(backoff)

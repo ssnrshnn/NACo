@@ -179,7 +179,35 @@ class NACoRadiusServer(pyrad.server.Server):
     # Hot-reload NAS clients from DB
     # ------------------------------------------------------------------
 
+    def _apply_db_clients(self, db_clients: list[tuple[str, str]]) -> None:
+        """Diff DB-managed NAS clients into the live host tables."""
+        cfg_addrs = {c.address for c in self._cfg.clients}
+        db_map = dict(db_clients)
+
+        # Add new / update changed DB-managed clients. Entries from
+        # config.yaml always win over a DB row for the same address.
+        for ip, secret in db_map.items():
+            if ip in cfg_addrs:
+                continue
+            if self._clients.get(ip) != secret:
+                verb = "Updated secret for" if ip in self._clients else "Hot-loaded"
+                self._clients[ip] = secret
+                self._client_msgauth.setdefault(ip, self._cfg.require_message_authenticator)
+                self.hosts[ip] = pyrad.server.RemoteHost(ip, secret.encode(), ip)
+                log.info("%s NAS client %s from database", verb, ip)
+
+        # Drop DB-managed clients that were deleted or disabled.
+        for ip in list(self._clients):
+            if ip not in cfg_addrs and ip not in db_map:
+                self._clients.pop(ip, None)
+                self._client_msgauth.pop(ip, None)
+                self.hosts.pop(ip, None)
+                log.info("Removed NAS client %s (deleted or disabled in database)", ip)
+
     def _maybe_reload_db_clients(self) -> None:
+        """Packet-driven refresh (belt) — the background task (braces) in
+        ``run_radius_server`` covers the case where no known NAS is talking,
+        which is exactly when a *first* NAS gets added via the UI."""
         import time as _time
         now = _time.monotonic()
         if now - self._last_client_reload < self._client_reload_interval:
@@ -191,28 +219,7 @@ class NACoRadiusServer(pyrad.server.Server):
             db_clients = asyncio.run_coroutine_threadsafe(
                 _load_db_nas_clients(), self._loop,
             ).result(timeout=5)
-            cfg_addrs = {c.address for c in self._cfg.clients}
-            db_map = dict(db_clients)
-
-            # Add new / update changed DB-managed clients. Entries from
-            # config.yaml always win over a DB row for the same address.
-            for ip, secret in db_map.items():
-                if ip in cfg_addrs:
-                    continue
-                if self._clients.get(ip) != secret:
-                    verb = "Updated secret for" if ip in self._clients else "Hot-loaded"
-                    self._clients[ip] = secret
-                    self._client_msgauth.setdefault(ip, self._cfg.require_message_authenticator)
-                    self.hosts[ip] = pyrad.server.RemoteHost(ip, secret.encode(), ip)
-                    log.info("%s NAS client %s from database", verb, ip)
-
-            # Drop DB-managed clients that were deleted or disabled.
-            for ip in list(self._clients):
-                if ip not in cfg_addrs and ip not in db_map:
-                    self._clients.pop(ip, None)
-                    self._client_msgauth.pop(ip, None)
-                    self.hosts.pop(ip, None)
-                    log.info("Removed NAS client %s (deleted or disabled in database)", ip)
+            self._apply_db_clients(db_clients)
         except Exception as exc:
             log.debug("NAS client reload failed: %s", exc)
 
@@ -769,6 +776,18 @@ async def _load_db_nas_clients() -> list[tuple[str, str]]:
         return [(c.ip_address, c.secret) for c in clients]
 
 
+async def _client_refresh_loop(server: NACoRadiusServer) -> None:
+    """Periodic NAS reload. Without this, a freshly-added first NAS is never
+    picked up: pyrad drops packets from unknown hosts *before*
+    ``HandleAuthPacket`` runs, so the packet-driven reload can't fire."""
+    while True:
+        await asyncio.sleep(server._client_reload_interval)
+        try:
+            server._apply_db_clients(await _load_db_nas_clients())
+        except Exception as exc:
+            log.warning("Background NAS client refresh failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Public launchers
 # ---------------------------------------------------------------------------
@@ -795,12 +814,19 @@ def run_radius_server(loop: asyncio.AbstractEventLoop) -> None:
     except Exception as exc:
         log.warning("Could not load NAS clients from DB: %s", exc)
 
+    refresh_future = asyncio.run_coroutine_threadsafe(
+        _client_refresh_loop(server), loop,
+    )
+
     server.BindToAddress(cfg.host)
     log.info(
         "RADIUS server listening on %s:%d (auth) %s:%d (acct)",
         cfg.host, cfg.auth_port, cfg.host, cfg.acct_port,
     )
-    server.Run()
+    try:
+        server.Run()
+    finally:
+        refresh_future.cancel()
 
 
 async def run_radius_server_async() -> None:

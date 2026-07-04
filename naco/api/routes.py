@@ -11,6 +11,7 @@ Each resource domain lives in its own ``routes_*.py`` module for maintainability
     routes_users.py        — /users CRUD
     routes_groups.py       — /groups CRUD
     routes_devices.py      — /devices CRUD
+    routes_nas.py          — /nas CRUD (RADIUS clients, hot-reloaded)
     routes_policies.py     — /policies CRUD
     routes_logs.py         — /logs/auth, /logs/tacacs, /logs/audit
     routes_sessions.py     — /sessions (active RADIUS sessions + CoA)
@@ -28,6 +29,7 @@ from naco.api.routes_devices import router as devices_router
 from naco.api.routes_groups import router as groups_router
 from naco.api.routes_health import router as health_router
 from naco.api.routes_logs import router as logs_router
+from naco.api.routes_nas import router as nas_router
 from naco.api.routes_policies import router as policies_router
 from naco.api.routes_sessions import router as sessions_router
 from naco.api.routes_users import router as users_router
@@ -39,6 +41,7 @@ router.include_router(auth_router)
 router.include_router(users_router)
 router.include_router(groups_router)
 router.include_router(devices_router)
+router.include_router(nas_router)
 router.include_router(policies_router)
 router.include_router(logs_router)
 router.include_router(sessions_router)

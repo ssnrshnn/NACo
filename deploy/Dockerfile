@@ -49,8 +49,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #   • tini        — PID-1 zombie reaper / signal proxy
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libpq5 postgresql-client libpcap0.8 tini ca-certificates \
+      libpq5 postgresql-client libpcap0.8 tini ca-certificates libcap2-bin \
  && rm -rf /var/lib/apt/lists/*
+
+# The profiler sniffs DHCP/ARP with raw sockets. `cap_add: NET_RAW` on the
+# container grants the capability to the *bounding set* only — a non-root
+# process still can't open AF_PACKET sockets unless the binary carries file
+# capabilities. Scope: any Python code in this container may open raw
+# sockets; acceptable for a network-access-control appliance.
+RUN setcap cap_net_raw+eip "$(readlink -f /usr/local/bin/python3)"
 
 # Unprivileged runtime user.
 RUN groupadd --system --gid 10001 naco \

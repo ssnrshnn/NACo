@@ -134,6 +134,25 @@ class GroupOut(BaseModel):
 # Devices
 # ---------------------------------------------------------------------------
 
+class DeviceCreate(BaseModel):
+    """Manually register a device (e.g. to pre-authorize a MAC for MAB
+    before the profiler has ever seen it)."""
+    mac_address: str = Field(..., min_length=12, max_length=17)
+    hostname:    str = Field("", max_length=128)
+    device_type: str = Field("unknown", max_length=64)
+    notes:       str = Field("", max_length=1024)
+    authorized:  bool = False
+
+    @field_validator("mac_address")
+    @classmethod
+    def normalise(cls, v):
+        from naco.core.utils import normalise_mac
+        try:
+            return normalise_mac(v)
+        except ValueError:
+            raise ValueError(f"Invalid MAC address: {v!r}")
+
+
 class DeviceUpdate(BaseModel):
     authorized: bool | None = None
     notes:      str | None = Field(None, max_length=1024)
