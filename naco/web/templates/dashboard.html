@@ -3,6 +3,45 @@
 {% block page_title %}Dashboard{% endblock %}
 
 {% block content %}
+{% if not setup_done %}
+<!-- ── First-boot setup checklist ────────────────────────────────────────── -->
+<div class="card border-primary mb-4">
+  <div class="card-header bg-transparent">
+    <i class="bi bi-rocket-takeoff me-1"></i> <strong>Get NACo running</strong>
+    <span class="text-muted small ms-2">this card disappears once the core steps are done</span>
+  </div>
+  <div class="card-body py-2">
+    <ul class="list-unstyled mb-0">
+      <li class="py-1">
+        {% if setup.nas %}<i class="bi bi-check-circle-fill text-success me-2"></i>{% else %}<i class="bi bi-circle text-muted me-2"></i>{% endif %}
+        <a href="/radius-clients">Register a NAS client</a>
+        <span class="text-muted small">— the switch/AP that will send RADIUS requests (IP + shared secret)</span>
+      </li>
+      <li class="py-1">
+        {% if setup.policy %}<i class="bi bi-check-circle-fill text-success me-2"></i>{% else %}<i class="bi bi-circle text-muted me-2"></i>{% endif %}
+        <a href="/policies">Create an access policy</a>
+        <span class="text-muted small">— without one, every request hits the default deny</span>
+      </li>
+      <li class="py-1">
+        {% if setup.users %}<i class="bi bi-check-circle-fill text-success me-2"></i>{% else %}<i class="bi bi-circle text-muted me-2"></i>{% endif %}
+        <a href="/users">Add network users</a>
+        <span class="text-muted small">— or connect LDAP/AD in <a href="/settings">Settings</a></span>
+      </li>
+      <li class="py-1">
+        {% if setup.eap %}<i class="bi bi-check-circle-fill text-success me-2"></i>{% else %}<i class="bi bi-dash-circle text-muted me-2"></i>{% endif %}
+        <span class="text-muted">Optional:</span> 802.1X / EAP sidecar
+        <span class="text-muted small">— {% if setup.eap %}enabled{% else %}set <code>NACO_EAP_BEARER_TOKEN</code> and start the <code>eap</code> compose profile{% endif %}</span>
+      </li>
+      <li class="py-1">
+        {% if setup.master_key %}<i class="bi bi-check-circle-fill text-success me-2"></i>{% else %}<i class="bi bi-dash-circle text-muted me-2"></i>{% endif %}
+        <span class="text-muted">Optional:</span> secrets encrypted at rest
+        <span class="text-muted small">— {% if setup.master_key %}master key configured{% else %}set <code>NACO_MASTER_KEY</code> (quickstart.sh does this automatically){% endif %}</span>
+      </li>
+    </ul>
+  </div>
+</div>
+{% endif %}
+
 <!-- ── Stats row ─────────────────────────────────────────────────────────── -->
 <div class="row g-3 mb-4">
   <div class="col-6 col-xl-3">

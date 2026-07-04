@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows are skipped, never overwritten) and every row passes the same
   Pydantic validation as the JSON API. Size-capped (5 MiB / 10 000 rows).
 
+- **First-boot setup checklist** — the dashboard now shows a
+  "Get NACo running" card until the three core steps are done (register
+  a NAS, create a policy, add users or connect LDAP), with optional rows
+  for the EAP sidecar and encryption at rest. Replaces the planned
+  multi-step wizard with something that can't get out of sync with the
+  real state — every check reads live counts/config.
+
 - **API tokens with role scopes** — `POST /api/v1/tokens` mints
   long-lived `naco_…` bearer credentials for automation, each carrying a
   role ceiling (VIEWER / OPERATOR / SUPERUSER) enforced by the existing

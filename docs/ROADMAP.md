@@ -16,10 +16,10 @@ Shipped in the day-two-ops work: CoA on policy change
 (`radius.coa_on_policy_change`), bulk CoA disconnect
 (`POST /api/v1/sessions/disconnect`), `/health/live` vs `/health/ready`
 split, CSV import/export for users/devices/NAS,
-`nacoctl test-radius` / `test-tacacs` synthetic probes, and API tokens
-with role scopes (`/api/v1/tokens`).
-
-- First-boot setup wizard
+`nacoctl test-radius` / `test-tacacs` synthetic probes, API tokens
+with role scopes (`/api/v1/tokens`), and the first-boot setup checklist
+on the dashboard (wizard-lite: live checks instead of a stateful
+multi-step flow).
 
 ## v2.3.0 — scale & observability
 

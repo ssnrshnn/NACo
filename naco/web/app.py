@@ -714,12 +714,29 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     )).scalars().all()
 
     cfg = get_config()
+
+    # First-boot setup checklist — shown until the three core steps
+    # (NAS, policy, users) are done; the optional rows are informational.
+    nas_count = (await db.execute(select(func.count()).select_from(NasClient))).scalar_one()
+    policy_count = (await db.execute(select(func.count()).select_from(Policy))).scalar_one()
+    from naco.core.secrets import get_master_key
+    setup = {
+        "nas":        nas_count > 0,
+        "policy":     policy_count > 0,
+        "users":      stats["total_users"] > 0 or cfg.ldap.enabled,
+        "eap":        cfg.eap.enabled,
+        "master_key": get_master_key() is not None,
+    }
+    setup_done = setup["nas"] and setup["policy"] and setup["users"]
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "request":     request,
         "user":        user,
         "stats":       stats,
         "recent_logs": recent_logs,
         "server_name": cfg.server.name,
+        "setup":       setup,
+        "setup_done":  setup_done,
     })
 
 
