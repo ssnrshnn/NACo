@@ -23,6 +23,7 @@ with a focused, auditable stack that runs anywhere Docker runs.
 - [Network access — NAS / switch setup](#network-access--nas--switch-setup)
 - [EAP via FreeRADIUS sidecar](#eap-via-freeradius-sidecar)
 - [Observability stack](#observability-stack)
+- [Day-two operations](#day-two-operations)
 - [Backup & restore](#backup--restore)
 - [Security model](#security-model)
 - [Contributing](#contributing)
@@ -163,6 +164,7 @@ source of truth.
 | `database.url`                      | SQLAlchemy URL (PostgreSQL or SQLite)                | `postgresql+asyncpg://naco:naco@postgres/naco` |
 | `cache.url`                         | Redis URL for rate limiting & sessions               | `redis://redis:6379/0`                   |
 | `radius.require_message_authenticator` | Drop Access-Requests without a valid MA           | `true` (BlastRADIUS mitigation)          |
+| `radius.coa_on_policy_change`       | Disconnect affected sessions when a policy changes    | `true`                                   |
 | `eap.bearer_token`                  | Auth token for FreeRADIUS `rlm_rest` callbacks       | *unset until you enable EAP*             |
 
 Every secret can also be passed via `${NACO_*}` environment variables (see
@@ -249,6 +251,55 @@ pre-wired to NACo:
 docker compose --profile obs up -d
 open http://localhost:3000   # admin / ${GRAFANA_ADMIN_PASSWORD}
 ```
+
+**Health probes** are split so orchestrators restart NACo only when NACo
+itself is broken:
+
+| Endpoint               | Purpose                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `/api/v1/health/live`  | Liveness — 200 whenever the process serves HTTP; touches no dependency. Point restart probes here. |
+| `/api/v1/health/ready` | Readiness — 200 only when the database answers; 503 otherwise. Redis state is reported but non-gating. Gate traffic here. |
+| `/api/v1/health`       | Back-compat alias of `ready`.                                  |
+
+---
+
+## Day-two operations
+
+**Policy changes propagate immediately.** When a policy is created,
+edited, or deleted, NACo finds the active sessions the rule applies to and
+sends their NASes RFC 5176 Disconnect-Requests, so clients re-authenticate
+under the new rules instead of keeping stale access until the next
+re-auth. On by default; turn off with `radius.coa_on_policy_change: false`.
+
+**Bulk disconnect** any slice of the session table:
+
+```bash
+curl -X POST https://<naco>/api/v1/sessions/disconnect \
+     -H "Authorization: Bearer $TOKEN" \
+     -d '{"username": "alice"}'          # or mac_address / nas_ip / "all": true
+# → Disconnect sent to 2 session(s): 2 acked, 0 failed, 0 skipped
+```
+
+**CSV import/export** for users, devices, and NAS clients:
+
+```bash
+# Inventory snapshots (exports never contain password hashes or secrets)
+curl -H "Authorization: Bearer $TOKEN" https://<naco>/api/v1/users/export.csv
+curl -H "Authorization: Bearer $TOKEN" https://<naco>/api/v1/devices/export.csv
+curl -H "Authorization: Bearer $TOKEN" https://<naco>/api/v1/nas/export.csv
+
+# Bulk onboarding — create-only: existing rows are skipped, never overwritten
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+     -F "file=@users.csv" https://<naco>/api/v1/users/import
+# → {"created": 40, "skipped": 2, "errors": ["line 7: …"]}
+```
+
+Import columns: users `username,password,email,full_name,group,enabled`
+(`group` is a group *name* that must exist) · devices
+`mac_address,hostname,device_type,notes,authorized` · NAS
+`name,ip_address,secret,description,enabled` (`secret` required, ≥ 16
+chars). Every row is validated by the same Pydantic models as the JSON
+API.
 
 ---
 

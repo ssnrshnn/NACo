@@ -12,10 +12,12 @@ Shipped in the encrypted-secrets work (post-2.1.0): `EncryptedString`
 startup refusal (`server.debug=false`), and age-encrypted backups
 (`nacoctl backup --age-recipient` / `restore --age-identity`).
 
+Shipped in the day-two-ops work: CoA on policy change
+(`radius.coa_on_policy_change`), bulk CoA disconnect
+(`POST /api/v1/sessions/disconnect`), `/health/live` vs `/health/ready`
+split, CSV import/export for users/devices/NAS.
+
 - API tokens with scopes (`/api/v1/tokens`)
-- Health split: `/health/live` vs `/health/ready`
-- CoA on policy change (disconnect affected sessions)
-- Bulk CoA endpoints; CSV import/export for users/devices/NAS
 - `nacoctl test-radius` / `test-tacacs` synthetic probes for monitoring
 - First-boot setup wizard
 

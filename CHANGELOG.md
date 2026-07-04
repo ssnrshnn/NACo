@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CoA on policy change** — creating, editing, or deleting a policy now
+  sends RFC 5176 Disconnect-Requests to the NASes of the active sessions
+  the rule (old *and* new conditions) applies to, forcing an immediate
+  re-authentication under the current rule set instead of waiting for the
+  next natural re-auth. Matching reuses the policy engine's own condition
+  evaluation, so semantics are identical. Runs as a background task with
+  bounded concurrency; disable with `radius.coa_on_policy_change: false`.
+
+- **Bulk CoA disconnect** — `POST /api/v1/sessions/disconnect` sends
+  Disconnect-Requests to every active session matching a filter
+  (`username`, `mac_address`, `nas_ip`, or explicit `all: true`) and
+  reports acked / failed / skipped counts. OPERATOR role, audit-logged.
+
+- **Liveness/readiness probe split** — `/api/v1/health/live` answers 200
+  whenever the process serves HTTP (restart probe, touches no
+  dependency); `/api/v1/health/ready` gates 200/503 on database
+  connectivity and reports Redis state without gating on it (auth falls
+  back to in-process implementations). `/api/v1/health` stays as a
+  back-compat alias of `ready`; the compose healthcheck now targets
+  `ready`.
+
+- **CSV import/export** — `GET /api/v1/{users,devices,nas}/export.csv`
+  and `POST /api/v1/{users,devices,nas}/import` for spreadsheet-driven
+  onboarding and inventory audits. Exports never contain credentials
+  (no password hashes, no NAS secrets); imports are create-only (existing
+  rows are skipped, never overwritten) and every row passes the same
+  Pydantic validation as the JSON API. Size-capped (5 MiB / 10 000 rows).
+
 - **Encrypted secrets at rest** — NAS shared secrets, TACACS+ keys, and
   admin TOTP seeds are now encrypted with AES-256-GCM before hitting the
   database (`enc:v1:` envelope, new `EncryptedString` column type). The
