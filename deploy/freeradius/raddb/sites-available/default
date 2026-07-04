@@ -1,18 +1,40 @@
-# Minimal "default" virtual server — routes EAP outer auth to rlm_rest → NACo.
+# Outer virtual server — EAP termination + REST delegation to NACo.
+#
+# Listens on 2812/2813 because NACo's built-in RADIUS server owns the
+# standard 1812/1813 on the same (host) network namespace:
+#
+#   1812/1813  NACo   — PAP / CHAP / MAB (+ Message-Authenticator enforcement)
+#   2812/2813  here   — 802.1X (EAP-TLS / EAP-TTLS / PEAP)
+#
+# Point 802.1X-enabled switches/SSIDs at 2812; MAB-only gear at 1812.
+#
+# rlm_rest 3.x consumes control:REST-HTTP-Header pairs per request, so the
+# NACo bearer token is injected right before every `rest` call.
 
 server default {
     listen {
         type     = auth
         ipaddr   = *
-        port     = 1812
+        port     = 2812
     }
     listen {
         type     = acct
         ipaddr   = *
-        port     = 1813
+        port     = 2813
     }
 
     authorize {
+        preprocess
+
+        # EAP outer — drives the TLS state machine until the tunnel is up.
+        eap {
+            ok = return
+        }
+
+        # Non-EAP request on this port (plain PAP) — delegate to NACo.
+        update control {
+            &REST-HTTP-Header += "Authorization: Bearer $ENV{NACO_EAP_TOKEN}"
+        }
         rest
         if (ok) {
             update control {
@@ -23,6 +45,9 @@ server default {
 
     authenticate {
         Auth-Type rest {
+            update control {
+                &REST-HTTP-Header += "Authorization: Bearer $ENV{NACO_EAP_TOKEN}"
+            }
             rest
         }
         eap
@@ -34,6 +59,9 @@ server default {
     }
 
     accounting {
+        update control {
+            &REST-HTTP-Header += "Authorization: Bearer $ENV{NACO_EAP_TOKEN}"
+        }
         rest
     }
 

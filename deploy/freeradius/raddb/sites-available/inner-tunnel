@@ -1,0 +1,50 @@
+# Inner-tunnel virtual server — handles the identity inside EAP-TTLS / PEAP.
+#
+# TTLS-PAP and PEAP-GTC deliver the inner username+password in cleartext
+# (inside the outer TLS tunnel); rlm_rest forwards them to NACo's
+# /api/v1/eap/auth for bcrypt verification and policy evaluation. Reply
+# attributes returned by NACo (VLAN, vendor VSAs) are copied to the outer
+# Access-Accept in post-auth.
+
+server inner-tunnel {
+
+    authorize {
+        # Inner EAP (e.g. PEAP wrapping EAP-GTC) — let the eap module claim it.
+        eap {
+            ok = return
+        }
+
+        # Plain inner PAP (TTLS-PAP) → delegate straight to NACo.
+        update control {
+            &REST-HTTP-Header += "Authorization: Bearer $ENV{NACO_EAP_TOKEN}"
+        }
+        rest
+        if (ok) {
+            update control {
+                Auth-Type := rest
+            }
+        }
+    }
+
+    authenticate {
+        Auth-Type rest {
+            update control {
+                &REST-HTTP-Header += "Authorization: Bearer $ENV{NACO_EAP_TOKEN}"
+            }
+            rest
+        }
+        eap
+    }
+
+    post-auth {
+        # Surface NACo's reply attributes (Tunnel-* VLAN, vendor VSAs) on the
+        # outer Access-Accept that the NAS actually sees.
+        update {
+            &outer.reply: += &reply:
+        }
+
+        Post-Auth-Type REJECT {
+            attr_filter.access_reject
+        }
+    }
+}

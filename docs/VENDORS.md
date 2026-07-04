@@ -56,6 +56,9 @@ dynamic-author` (or equivalent) at the NACo host.
 All examples below assume:
 
 - NACo at `10.0.0.10`, auth `1812`, acct `1813`, CoA `3799`
+- 802.1X/EAP goes to the bundled FreeRADIUS on `2812`/`2813` (default-on
+  sidecar) — use those ports instead of 1812/1813 wherever a config below
+  enables dot1x; keep MAB/PAP on 1812
 - Shared secret `S3cret!` (must match the NAS entry in *RADIUS Clients*)
 - **Message-Authenticator enabled** — NACo drops Access-Requests without it
   by default (BlastRADIUS mitigation). Every config below turns it on where

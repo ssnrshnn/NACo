@@ -1,10 +1,12 @@
 # rlm_rest module — delegates authn/authz/accounting to NACo.
 #
 # All three endpoints live at /api/v1/eap/* on the NACo container. We pin
-# the bearer token via the NACO_EAP_TOKEN env var (see docker-compose.eap.yml).
+# the bearer token via the NACO_EAP_TOKEN env var (see docker-compose.yml).
+# NOTE: $ENV{...} is FreeRADIUS syntax for environment variables — ${...}
+# would be a config-item reference and fail to parse.
 
 rest {
-    connect_uri        = "${NACO_EAP_URL}"
+    connect_uri        = "$ENV{NACO_EAP_URL}"
     connect_timeout    = 5.0
 
     authorize {
@@ -42,8 +44,7 @@ rest {
         idle_timeout   = 600
     }
 
-    # Pre-shared bearer token — sent on every request.
-    headers {
-        Authorization = "Bearer ${NACO_EAP_TOKEN}"
-    }
+    # NOTE: rlm_rest 3.x has no static-headers option. The bearer token is
+    # injected per call via `update control { &REST-HTTP-Header += ... }`
+    # in the virtual servers (rlm_rest consumes those pairs per request).
 }

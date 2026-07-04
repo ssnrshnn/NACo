@@ -198,7 +198,7 @@ class AppConfig(BaseModel):
 
 _DEFAULT_PATHS = [
     Path("config.yaml"),
-    Path("naco/config/config.yaml"),
+    Path("config/config.yaml"),
     Path("/etc/naco/config.yaml"),
 ]
 
@@ -243,5 +243,13 @@ def get_config() -> AppConfig:
     cache_url = os.environ.get("NACO_REDIS_URL")
     if cache_url:
         data.setdefault("cache", {})["url"] = cache_url
+
+    # A bearer token in the environment implies the FreeRADIUS sidecar is in
+    # play — enable the /api/v1/eap/* endpoints unless YAML says otherwise.
+    eap_token = os.environ.get("NACO_EAP_BEARER_TOKEN")
+    if eap_token:
+        eap = data.setdefault("eap", {})
+        eap["bearer_token"] = eap_token
+        eap.setdefault("enabled", True)
 
     return AppConfig.model_validate(data)

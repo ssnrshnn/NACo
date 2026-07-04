@@ -60,11 +60,11 @@ profiler:
   listen_interface: "eth0"
   oui_db: "/var/lib/naco/oui.csv"
 
-eap:
-  # Enable together with `docker compose --profile eap`. The token must match
-  # NACO_EAP_BEARER_TOKEN in .env (FreeRADIUS is given the same value).
-  enabled: false
-  bearer_token: ""
+# EAP (FreeRADIUS sidecar) is configured entirely via NACO_EAP_BEARER_TOKEN
+# in .env — setting the token auto-enables the /api/v1/eap/* endpoints.
+# Uncomment only to force it off while keeping the token set:
+#eap:
+#  enabled: false
 
 ldap:
   enabled: false
