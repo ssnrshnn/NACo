@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-07-04
+
 ### Added
 
 - **Multi-vendor reply attributes** — policies can attach standard or
@@ -362,5 +364,6 @@ only supported migration.
 - Session-token / API-token escalation — closed by splitting the
   signing secrets.
 
-[Unreleased]: https://github.com/ssnrshnn/naco/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/ssnrshnn/naco/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/ssnrshnn/naco/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/ssnrshnn/naco/releases/tag/v2.0.0
