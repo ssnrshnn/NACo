@@ -15,10 +15,10 @@ startup refusal (`server.debug=false`), and age-encrypted backups
 Shipped in the day-two-ops work: CoA on policy change
 (`radius.coa_on_policy_change`), bulk CoA disconnect
 (`POST /api/v1/sessions/disconnect`), `/health/live` vs `/health/ready`
-split, CSV import/export for users/devices/NAS, and
-`nacoctl test-radius` / `test-tacacs` synthetic probes.
+split, CSV import/export for users/devices/NAS,
+`nacoctl test-radius` / `test-tacacs` synthetic probes, and API tokens
+with role scopes (`/api/v1/tokens`).
 
-- API tokens with scopes (`/api/v1/tokens`)
 - First-boot setup wizard
 
 ## v2.3.0 — scale & observability

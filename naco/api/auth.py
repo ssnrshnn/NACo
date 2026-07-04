@@ -24,6 +24,7 @@ See :class:`naco.db.models.AdminRole` for the rank ordering.
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -34,10 +35,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.config import get_config
 from naco.db import get_db
-from naco.db.models import AdminRole, AdminUser
+from naco.db.models import AdminRole, AdminUser, ApiToken
 
 _ALGORITHM = "HS256"
 _SESSION_COOKIE = "naco_session"
+
+# Static API tokens (naco.db.models.ApiToken) are distinguishable from JWTs
+# by this prefix, so `Authorization: Bearer` carries either interchangeably.
+API_TOKEN_PREFIX = "naco_"
+
+
+def hash_api_token(raw: str) -> str:
+    """Deterministic digest for token lookup. SHA-256 (not bcrypt) is fine
+    here: tokens are 256-bit random values, not human passwords."""
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 # bcrypt cost factor for *new* hashes. Existing hashes keep working at
@@ -181,6 +192,8 @@ async def get_current_admin(
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         token = auth.split(" ", 1)[1].strip()
+        if token.startswith(API_TOKEN_PREFIX):
+            return await _admin_from_api_token(token, db, credentials_exception)
         if token:
             payload = _decode_with(cfg.server.api_secret, token)
     if payload is None:
@@ -199,6 +212,47 @@ async def get_current_admin(
     if user is None:
         raise credentials_exception
     return user
+
+
+async def _admin_from_api_token(
+    raw: str, db: AsyncSession, credentials_exception: HTTPException
+) -> AdminUser:
+    """Resolve a static ``naco_…`` token to a transient admin principal.
+
+    The returned object is *not* persisted — it exists so ``require_role``
+    and the audit trail (username ``token:<name>``) work unchanged. The
+    ``via_api_token`` marker lets the token-management routes refuse
+    tokens as a way to mint more tokens.
+    """
+    row = (await db.execute(
+        select(ApiToken).where(ApiToken.token_hash == hash_api_token(raw), ApiToken.enabled)
+    )).scalar_one_or_none()
+    if row is None:
+        raise credentials_exception
+
+    now = datetime.now(UTC)
+    if row.expires_at is not None:
+        expires = row.expires_at
+        if expires.tzinfo is None:  # SQLite returns naive datetimes
+            expires = expires.replace(tzinfo=UTC)
+        if expires <= now:
+            raise credentials_exception
+
+    # Stamp last_used_at at most once a minute — an audit aid, not a write
+    # per request.
+    last = row.last_used_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    if last is None or (now - last) > timedelta(minutes=1):
+        row.last_used_at = now
+        await db.commit()
+
+    admin = AdminUser(
+        username=f"token:{row.name}", password_hash="!",
+        role=row.role, is_superuser=False, enabled=True,
+    )
+    admin.via_api_token = True
+    return admin
 
 
 # ---------------------------------------------------------------------------

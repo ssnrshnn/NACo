@@ -301,6 +301,21 @@ Import columns: users `username,password,email,full_name,group,enabled`
 chars). Every row is validated by the same Pydantic models as the JSON
 API.
 
+**API tokens** give automation (CI, monitoring, scripts) long-lived
+credentials without sharing an admin login. Each token carries a role
+ceiling (`VIEWER` / `OPERATOR` / `SUPERUSER`) enforced by the same RBAC
+as admin accounts; only a SHA-256 digest is stored, and the raw value is
+shown once, at creation. Tokens cannot mint or revoke other tokens.
+
+```bash
+curl -X POST https://<naco>/api/v1/tokens \
+     -H "Authorization: Bearer $ADMIN_JWT" \
+     -d '{"name": "ci-deploy", "role": "OPERATOR", "expires_days": 90}'
+# → {"token": "naco_…", …}    ← store it; it is never shown again
+
+curl https://<naco>/api/v1/users -H "Authorization: Bearer naco_…"
+```
+
 **Synthetic AAA probes** exercise the full protocol path (socket →
 parsing → policy engine → reply) — what a NAS actually experiences,
 beyond what `/health/*` can see:

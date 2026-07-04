@@ -18,6 +18,7 @@ Each resource domain lives in its own ``routes_*.py`` module for maintainability
     routes_dashboard.py    — /dashboard stats, /guests
     routes_command_sets.py — /command-sets CRUD (TACACS+)
     routes_csv.py          — CSV import/export (users, devices, NAS)
+    routes_tokens.py       — /tokens (static API tokens for automation)
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ from naco.api.routes_logs import router as logs_router
 from naco.api.routes_nas import router as nas_router
 from naco.api.routes_policies import router as policies_router
 from naco.api.routes_sessions import router as sessions_router
+from naco.api.routes_tokens import router as tokens_router
 from naco.api.routes_users import router as users_router
 
 router = APIRouter()
@@ -51,3 +53,4 @@ router.include_router(logs_router)
 router.include_router(sessions_router)
 router.include_router(dashboard_router)
 router.include_router(command_sets_router)
+router.include_router(tokens_router)

@@ -476,3 +476,35 @@ class AdminAuditLog(Base):
     resource_type: Mapped[str]   = mapped_column(String(64), nullable=False)  # user, policy, device, ...
     resource_id: Mapped[str]     = mapped_column(String(64), default="")
     detail: Mapped[str]          = mapped_column(Text, default="")
+
+
+# ---------------------------------------------------------------------------
+# API tokens (long-lived bearer credentials for automation)
+# ---------------------------------------------------------------------------
+
+class ApiToken(Base):
+    """Long-lived API bearer token, scoped to a role ceiling.
+
+    Only a SHA-256 digest of the token is stored — the raw value
+    (``naco_…``) is shown exactly once, at creation. The ``role`` acts as
+    the token's permission ceiling through the same ``require_role``
+    checks the admin UI uses.
+    """
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int]              = mapped_column(Integer, primary_key=True)
+    name: Mapped[str]            = mapped_column(String(64), unique=True, nullable=False)
+    token_hash: Mapped[str]      = mapped_column(String(64), unique=True, nullable=False, index=True)
+    # First characters of the raw token, for identification in listings.
+    prefix: Mapped[str]          = mapped_column(String(16), nullable=False, default="")
+    role: Mapped[str]            = mapped_column(
+        Enum(AdminRole), default=AdminRole.VIEWER, nullable=False,
+        server_default=AdminRole.VIEWER.value,
+    )
+    created_by: Mapped[str]      = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool]        = mapped_column(Boolean, default=True)

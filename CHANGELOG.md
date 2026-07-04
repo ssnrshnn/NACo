@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows are skipped, never overwritten) and every row passes the same
   Pydantic validation as the JSON API. Size-capped (5 MiB / 10 000 rows).
 
+- **API tokens with role scopes** — `POST /api/v1/tokens` mints
+  long-lived `naco_…` bearer credentials for automation, each carrying a
+  role ceiling (VIEWER / OPERATOR / SUPERUSER) enforced by the existing
+  RBAC. Only a SHA-256 digest is stored (the raw value is shown once);
+  optional expiry, last-used tracking, immediate revocation via DELETE.
+  Actions performed with a token are audited as `token:<name>`. Tokens
+  cannot manage tokens, and token management itself is SUPERUSER-only.
+  Migration `0008` adds the `api_tokens` table.
+
 - **Synthetic AAA probes** — `nacoctl test-radius` sends a real PAP
   Access-Request (Message-Authenticator included) and `nacoctl
   test-tacacs` a real TACACS+ PAP authentication, classifying the reply
