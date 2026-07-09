@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Profiler write coalescing** — DHCP/ARP observations are merged per MAC
   in memory and flushed as one transaction every 5 s, instead of one
   SELECT + UPSERT round-trip per sniffed packet.
+- **OpenTelemetry tracing (optional)** — `otel.enabled` + `otel.endpoint`
+  (env `NACO_OTEL_ENDPOINT` auto-enables) exports OTLP/HTTP spans for HTTP
+  requests, SQL statements and the RADIUS/TACACS+ auth handlers
+  (`radius.auth` with method/result/policy attributes, `tacacs.packet`).
+  Requires `pip install "naco[otel]"`; without the extra (or when
+  disabled) the span helper is a no-op and setup degrades gracefully.
 
 ### Fixed
 

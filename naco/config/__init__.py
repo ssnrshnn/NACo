@@ -216,6 +216,19 @@ class EapConfig(BaseModel):
     bearer_token: str = ""
 
 
+class OtelConfig(BaseModel):
+    """OpenTelemetry tracing (optional — needs the `naco[otel]` extra).
+
+    Spans cover HTTP requests (FastAPI), SQL statements (SQLAlchemy) and
+    the RADIUS/TACACS+ authentication handlers. Export is OTLP/HTTP.
+    """
+    enabled: bool = False
+    # OTLP/HTTP collector endpoint, e.g. "http://otel-collector:4318".
+    endpoint: str = ""
+    # Head sampling ratio, 0.0–1.0. 1.0 traces everything.
+    sample_ratio: float = 1.0
+
+
 class AppConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -225,6 +238,7 @@ class AppConfig(BaseModel):
     portal: PortalConfig = Field(default_factory=PortalConfig)
     profiler: ProfilerConfig = Field(default_factory=ProfilerConfig)
     eap: EapConfig = Field(default_factory=EapConfig)
+    otel: OtelConfig = Field(default_factory=OtelConfig)
     log_forwarding: LogForwardingConfig = Field(default_factory=LogForwardingConfig)
     ldap: LdapConfig = Field(default_factory=LdapConfig)
     event_webhooks: list[EventWebhookTarget] = []
@@ -307,6 +321,14 @@ def get_config() -> AppConfig:
     cache_url = os.environ.get("NACO_REDIS_URL")
     if cache_url:
         data.setdefault("cache", {})["url"] = cache_url
+
+    # An OTLP endpoint in the environment implies a collector is deployed —
+    # enable tracing unless YAML says otherwise.
+    otel_endpoint = os.environ.get("NACO_OTEL_ENDPOINT")
+    if otel_endpoint:
+        otel = data.setdefault("otel", {})
+        otel["endpoint"] = otel_endpoint
+        otel.setdefault("enabled", True)
 
     # A bearer token in the environment implies the FreeRADIUS sidecar is in
     # play — enable the /api/v1/eap/* endpoints unless YAML says otherwise.

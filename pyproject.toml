@@ -43,6 +43,13 @@ dev = [
     "pip-audit>=2.7",
     "hypothesis>=6.100",
 ]
+otel = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+    "opentelemetry-instrumentation-fastapi>=0.46b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.46b0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

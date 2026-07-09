@@ -229,14 +229,18 @@ class TacacsSession:
 
         body = _crypt(raw_body, self._key, hdr.session_id, hdr.version, hdr.seq_no)
 
-        if hdr.pkt_type == TAC_PLUS_AUTHEN:
-            await self._handle_authen(hdr, body)
-        elif hdr.pkt_type == TAC_PLUS_AUTHOR:
-            await self._handle_author(hdr, body)
-        elif hdr.pkt_type == TAC_PLUS_ACCT:
-            await self._handle_acct(hdr, body)
-        else:
-            log.warning("Unknown TACACS+ packet type 0x%02x from %s", hdr.pkt_type, self._peer_ip)
+        from naco.core.tracing import span as trace_span
+        with trace_span("tacacs.packet", peer_ip=self._peer_ip,
+                        packet_type=hdr.pkt_type):
+            if hdr.pkt_type == TAC_PLUS_AUTHEN:
+                await self._handle_authen(hdr, body)
+            elif hdr.pkt_type == TAC_PLUS_AUTHOR:
+                await self._handle_author(hdr, body)
+            elif hdr.pkt_type == TAC_PLUS_ACCT:
+                await self._handle_acct(hdr, body)
+            else:
+                log.warning("Unknown TACACS+ packet type 0x%02x from %s",
+                            hdr.pkt_type, self._peer_ip)
 
     # ------------------------------------------------------------------
     # Authentication

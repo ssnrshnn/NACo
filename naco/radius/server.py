@@ -44,6 +44,7 @@ import pyrad.packet
 from naco.config import get_config
 from naco.core.events import Event, EventType, bus
 from naco.core.logger import get_logger
+from naco.core.tracing import span as trace_span
 from naco.core.utils import chap_verify, normalise_mac
 from naco.db.database import AsyncSessionLocal
 from naco.db.models import (
@@ -340,46 +341,61 @@ class NACoRadiusServer:
             return
 
         try:
-            method, username, result, reason = await self._authenticate(pkt)
-
-            policy_vlan: int | None = None
-            policy_name: str = ""
-            reply_attrs: dict = {}
-            if result == AuthResult.SUCCESS:
-                policy_vlan, result, reason, policy_name, reply_attrs = (
-                    await self._apply_policy(username, pkt, method)
-                )
-
-            if result == AuthResult.SUCCESS:
-                reply = self._make_reply(pkt, pyrad.packet.AccessAccept)
-                vlan = policy_vlan if policy_vlan is not None else self._resolve_vlan(username, nas_ip, method, pkt)
-                if vlan:
-                    # RFC 3580 §3.31 dynamic VLAN assignment. pyrad expects
-                    # the RFC 2868 tag in the attribute *key* ("Attr:1"),
-                    # and encodes tagged integers as tag + 3-byte value.
-                    try:
-                        reply["Tunnel-Type:1"]             = 13          # VLAN
-                        reply["Tunnel-Medium-Type:1"]      = 6           # IEEE-802
-                        reply["Tunnel-Private-Group-Id:1"] = str(vlan)
-                    except Exception as exc:
-                        log.error(
-                            "Failed to attach VLAN %s to Access-Accept for user=%r: %s "
-                            "— NAS will fall back to its default VLAN",
-                            vlan, username, exc,
-                        )
-                self._attach_reply_attributes(reply, reply_attrs, username)
-                log.info("Access-ACCEPT user=%r nas=%s method=%s", username, nas_ip, method)
-            else:
-                reply = self._make_reply(pkt, pyrad.packet.AccessReject)
-                log.info("Access-REJECT user=%r nas=%s reason=%r", username, nas_ip, reason)
-
-            self._send_reply(transport, reply, addr)
-            await self._log_auth(pkt, username, method, result, reason, policy_name, policy_vlan)
-            self._publish(username, pkt, method, result, reason)
-
+            with trace_span("radius.auth", nas_ip=nas_ip) as current_span:
+                await self._process_auth_request(transport, pkt, addr, nas_ip, current_span)
         except Exception as exc:
             log.exception("RADIUS auth handler error for NAS %s: %s", nas_ip, exc)
             self._send_reply(transport, self._make_reply(pkt, pyrad.packet.AccessReject), addr)
+
+    async def _process_auth_request(
+        self,
+        transport: asyncio.DatagramTransport,
+        pkt: pyrad.packet.AuthPacket,
+        addr: tuple[str, int],
+        nas_ip: str,
+        current_span: Any = None,
+    ) -> None:
+        method, username, result, reason = await self._authenticate(pkt)
+
+        policy_vlan: int | None = None
+        policy_name: str = ""
+        reply_attrs: dict = {}
+        if result == AuthResult.SUCCESS:
+            policy_vlan, result, reason, policy_name, reply_attrs = (
+                await self._apply_policy(username, pkt, method)
+            )
+        if current_span is not None:
+            current_span.set_attribute("radius.method", str(method.value))
+            current_span.set_attribute("radius.result", str(result.value))
+            if policy_name:
+                current_span.set_attribute("radius.policy", policy_name)
+
+        if result == AuthResult.SUCCESS:
+            reply = self._make_reply(pkt, pyrad.packet.AccessAccept)
+            vlan = policy_vlan if policy_vlan is not None else self._resolve_vlan(username, nas_ip, method, pkt)
+            if vlan:
+                # RFC 3580 §3.31 dynamic VLAN assignment. pyrad expects
+                # the RFC 2868 tag in the attribute *key* ("Attr:1"),
+                # and encodes tagged integers as tag + 3-byte value.
+                try:
+                    reply["Tunnel-Type:1"]             = 13          # VLAN
+                    reply["Tunnel-Medium-Type:1"]      = 6           # IEEE-802
+                    reply["Tunnel-Private-Group-Id:1"] = str(vlan)
+                except Exception as exc:
+                    log.error(
+                        "Failed to attach VLAN %s to Access-Accept for user=%r: %s "
+                        "— NAS will fall back to its default VLAN",
+                        vlan, username, exc,
+                    )
+            self._attach_reply_attributes(reply, reply_attrs, username)
+            log.info("Access-ACCEPT user=%r nas=%s method=%s", username, nas_ip, method)
+        else:
+            reply = self._make_reply(pkt, pyrad.packet.AccessReject)
+            log.info("Access-REJECT user=%r nas=%s reason=%r", username, nas_ip, reason)
+
+        self._send_reply(transport, reply, addr)
+        await self._log_auth(pkt, username, method, result, reason, policy_name, policy_vlan)
+        self._publish(username, pkt, method, result, reason)
 
     # ------------------------------------------------------------------
     # Accounting handler

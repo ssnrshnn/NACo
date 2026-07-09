@@ -230,6 +230,12 @@ async def lifespan(_app: FastAPI):
     await init_db()
     await _seed_database()
 
+    # OpenTelemetry (optional): HTTP + SQL + auth-plane spans. No-op unless
+    # otel.enabled and the `naco[otel]` extra is installed.
+    from naco.core.tracing import setup_tracing
+    from naco.db.database import engine as db_engine
+    setup_tracing(cfg, app=app, engine=db_engine)
+
     # ── Role-gated subsystems ────────────────────────────────────────────
     # "all" (default) runs everything → identical to the classic single-node
     # deployment. Splitting roles lets the stateless API scale independently
