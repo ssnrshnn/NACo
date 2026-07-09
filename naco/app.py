@@ -118,6 +118,10 @@ async def _log_retention_loop() -> None:
     from sqlalchemy import delete as sa_delete
 
     from naco.db.models import AdminAuditLog, AuthLog, TacacsLog
+    from naco.db.partitions import (
+        drop_expired_partitions,
+        ensure_month_partitions,
+    )
 
     while True:
         try:
@@ -125,6 +129,13 @@ async def _log_retention_loop() -> None:
             auth_cutoff  = now - timedelta(days=_LOG_RETENTION_DAYS)
             admin_cutoff = now - timedelta(days=_ADMIN_AUDIT_RETENTION_DAYS)
             async with AsyncSessionLocal() as db:
+                # Postgres: keep next month's partitions provisioned and drop
+                # whole expired months (instant, no dead tuples). Row deletes
+                # below then only handle the partially-expired boundary month
+                # and non-partitioned deployments. No-ops on SQLite.
+                await ensure_month_partitions(db, months_ahead=1, now=now)
+                await drop_expired_partitions(db, cutoff=auth_cutoff)
+
                 r1 = await db.execute(sa_delete(AuthLog).where(AuthLog.timestamp < auth_cutoff))
                 r2 = await db.execute(sa_delete(TacacsLog).where(TacacsLog.timestamp < auth_cutoff))
                 r3 = await db.execute(

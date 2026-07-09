@@ -59,6 +59,10 @@ def upgrade() -> None:
 
     # ── Switch policies.conditions from Text to JSON ──────────────────
     if dialect == "postgresql":
+        # Postgres refuses ALTER TYPE while a text default exists ("default
+        # for column cannot be cast automatically") — drop it first, the
+        # jsonb default is set right after.
+        op.execute("ALTER TABLE policies ALTER COLUMN conditions DROP DEFAULT")
         # Postgres: cast the existing text to jsonb in-place
         op.execute(
             "ALTER TABLE policies "

@@ -27,11 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never raise and never answer undecodable garbage.
 - **`bench/radius_bench.py`** — asyncio RADIUS load generator (MAB or PAP)
   reporting auth/s and latency percentiles against any RFC 2865 server.
+- **Monthly partitioning for `auth_logs`/`tacacs_logs` (PostgreSQL)** —
+  migration `0009_partition_logs` converts both tables to RANGE partitions
+  by month (plus a DEFAULT safety partition; PK becomes `(id, timestamp)`).
+  The retention worker keeps next month provisioned and drops whole expired
+  months instantly instead of deleting millions of rows; row-level deletes
+  still handle the boundary month and non-partitioned (SQLite/quickstart)
+  databases.
+- **Profiler write coalescing** — DHCP/ARP observations are merged per MAC
+  in memory and flushed as one transaction every 5 s, instead of one
+  SELECT + UPSERT round-trip per sniffed packet.
 
 ### Fixed
 
 - `parse_vlan_attr` accepted out-of-range VLAN IDs from text attribute
   values (e.g. `"99999"`, `"0"`); all input forms now clamp to 1–4094.
+- **Fresh `alembic upgrade head` was broken on PostgreSQL since 0004** —
+  `ALTER COLUMN conditions TYPE JSONB` failed with "default for column
+  cannot be cast automatically" because the text default was still in
+  place. Existing deployments were unaffected (their schema comes from
+  `create_all` + stamp), but a from-scratch migration chain never
+  completed. The migration now drops the default before the cast.
 
 ## [2.2.1] — 2026-07-09
 
