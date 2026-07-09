@@ -160,6 +160,10 @@ services:
       - ./deploy/freeradius/raddb/mods-available/eap:/etc/raddb/mods-enabled/eap:ro
       - ./deploy/freeradius/raddb/sites-available/default:/etc/raddb/sites-enabled/default:ro
       - ./deploy/freeradius/raddb/sites-available/inner-tunnel:/etc/raddb/sites-enabled/inner-tunnel:ro
+      # RadSec (RADIUS/TLS, RFC 6614) on 2083/tcp — mutual TLS required, so
+      # the listener is inert for anyone without a client cert from our CA.
+      # Remove this mount to disable. See docs/RADSEC.md.
+      - ./deploy/freeradius/raddb/sites-available/radsec:/etc/raddb/sites-enabled/radsec:ro
       - ./deploy/freeradius/certs:/etc/raddb/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "pgrep radiusd >/dev/null"]
