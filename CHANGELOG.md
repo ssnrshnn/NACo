@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Profiler write coalescing** — DHCP/ARP observations are merged per MAC
   in memory and flushed as one transaction every 5 s, instead of one
   SELECT + UPSERT round-trip per sniffed packet.
+- **Enterprise LDAP/AD depth** — `ldap.servers` failover pool (tried in
+  order, dead controllers skipped and retried later), `ldap.start_tls`,
+  `ldap.connect_timeout`, and `ldap.nested_groups` which resolves
+  transitive membership via the AD matching rule
+  `LDAP_MATCHING_RULE_IN_CHAIN` (plain `memberOf` only sees direct
+  groups). `group_map` matching is now case-insensitive and its order
+  sets provisioning priority; the mapped group's name is what policy
+  conditions match on, so directory membership drives the policy engine.
 - **OIDC admin SSO (Keycloak / Authentik / Okta / any RFC-compliant
   provider)** — `oidc.*` config enables "Sign in with SSO" on the admin
   login page: standard authorization-code flow, endpoints discovered from

@@ -152,14 +152,29 @@ class LogForwardingConfig(BaseModel):
 
 class LdapConfig(BaseModel):
     enabled: bool = False
+    # Single server (legacy). Ignored when `servers` is set.
     server: str = "ldap://dc.example.com"
+    # Failover pool: tried in order, first reachable server wins. Each entry
+    # is a URI ("ldap://dc1.example.com" or "ldaps://dc1.example.com:636").
+    servers: list[str] = []
     port: int = 389
     use_ssl: bool = False
+    # Upgrade a plain connection with StartTLS before binding (mutually
+    # exclusive with use_ssl/ldaps).
+    start_tls: bool = False
+    # Seconds before an unreachable server is skipped for the next in pool.
+    connect_timeout: int = 5
     bind_dn: str = ""
     bind_password: str = ""
     base_dn: str = ""
     user_filter: str = "(sAMAccountName={username})"
     group_attribute: str = "memberOf"
+    # Resolve nested group membership via the AD matching rule
+    # LDAP_MATCHING_RULE_IN_CHAIN (memberOf only lists direct groups).
+    nested_groups: bool = False
+    # Map of group DN → NACo group name. Order sets provisioning priority:
+    # the first matching entry becomes the user's group. Matching is
+    # case-insensitive (DNs are).
     group_map: dict[str, str] = {}
 
 
