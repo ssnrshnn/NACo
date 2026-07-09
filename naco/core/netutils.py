@@ -127,7 +127,7 @@ def validate_outbound_url(url: str, *, allowlist: list[str] | None = None) -> No
             results = socket.getaddrinfo(hostname, None)
         except socket.gaierror as exc:
             raise UrlPolicyError(f"Cannot resolve host {hostname!r}: {exc}")
-        addrs = list({r[4][0] for r in results})
+        addrs = list({str(r[4][0]) for r in results})
 
     allowlist = allowlist or []
     for addr in addrs:

@@ -184,7 +184,7 @@ class Policy(Base):
     name: Mapped[str]         = mapped_column(String(128), unique=True, nullable=False)
     description: Mapped[str]  = mapped_column(String(512), default="")
     priority: Mapped[int]     = mapped_column(Integer, default=100)
-    conditions: Mapped[str]   = mapped_column(JSON, default=list)  # JSONB on Postgres, JSON-as-text on SQLite
+    conditions: Mapped[list]  = mapped_column(JSON, default=list)  # JSONB on Postgres, JSON-as-text on SQLite
     action: Mapped[str]       = mapped_column(
         Enum(PolicyAction), default=PolicyAction.PERMIT, nullable=False
     )
@@ -216,6 +216,10 @@ class Policy(Base):
 
 class AuthLog(Base):
     __tablename__ = "auth_logs"
+
+    # Non-persisted UI tag set when auth/tacacs rows are merged for the logs
+    # view. Unannotated on purpose so SQLAlchemy does not treat it as a column.
+    _source = ""
 
     id: Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(
@@ -294,6 +298,9 @@ class GuestSession(Base):
 class TacacsLog(Base):
     __tablename__ = "tacacs_logs"
 
+    # Non-persisted UI tag (see AuthLog._source).
+    _source = ""
+
     id: Mapped[int]              = mapped_column(Integer, primary_key=True)
     timestamp: Mapped[datetime]  = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), index=True
@@ -314,6 +321,11 @@ class TacacsLog(Base):
 
 class AdminUser(Base):
     __tablename__ = "admin_users"
+
+    # Non-persisted marker: set on transient principals minted from a static
+    # API token so token-management routes can refuse token-minted callers.
+    # Unannotated on purpose so SQLAlchemy does not map it as a column.
+    via_api_token = False
 
     id: Mapped[int]             = mapped_column(Integer, primary_key=True)
     username: Mapped[str]       = mapped_column(String(64), unique=True, nullable=False)

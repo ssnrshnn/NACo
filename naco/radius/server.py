@@ -625,18 +625,18 @@ class NACoRadiusServer(pyrad.server.Server):
 
         async with AsyncSessionLocal() as db:
             if method == AuthMethod.MAB:
-                stmt = select(Device).where(Device.mac_address == (mac or username))
-                dev = (await db.execute(stmt)).scalar_one_or_none()
+                dev_stmt = select(Device).where(Device.mac_address == (mac or username))
+                dev = (await db.execute(dev_stmt)).scalar_one_or_none()
                 if dev:
                     device_type = dev.device_type or "unknown"
                 has_guest_session = await _has_active_guest_session(db, mac or username)
             else:
-                stmt = (
+                user_stmt = (
                     select(User)
                     .options(selectinload(User.group))
                     .where(User.username == username, User.enabled)
                 )
-                user = (await db.execute(stmt)).scalar_one_or_none()
+                user = (await db.execute(user_stmt)).scalar_one_or_none()
                 if user and user.group:
                     group_name = user.group.name
 
@@ -696,6 +696,8 @@ class NACoRadiusServer(pyrad.server.Server):
     # ---- Sync bridge ----
 
     def _run_sync(self, coro) -> Any:
+        if self._loop is None:
+            raise RuntimeError("RADIUS server event loop not initialised")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result(timeout=10)
 

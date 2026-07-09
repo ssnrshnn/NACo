@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "naco"
-version = "2.1.0"
+version = "2.2.0"
 description = "NACo — a modern, container-native Network Access Control & AAA server"
 readme = "README.md"
 license = { text = "MIT" }
@@ -91,6 +91,9 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-warn_unused_ignores = true
+# `warn_unused_ignores` is intentionally off: the exact set of required
+# `# type: ignore` comments varies between mypy releases, and a hard CI gate
+# must not break just because a runner pulled a slightly different mypy.
+warn_unused_ignores = false
 warn_return_any = false
 ignore_missing_imports = true

@@ -81,7 +81,12 @@ def _set_csrf_cookie(request: Request, response: Response, token: str) -> None:
     )
     response.set_cookie(
         _CSRF_COOKIE, token,
-        httponly=True, secure=is_https, samesite="strict",
+        # Lax (not Strict): a captive portal is typically reached via a
+        # cross-site top-level navigation from the OS connectivity check, and
+        # Strict withholds the cookie on those flows — producing spurious
+        # "CSRF token missing" errors. Lax still blocks cross-site POSTs, so
+        # the double-submit CSRF protection is preserved.
+        httponly=True, secure=is_https, samesite="lax",
         max_age=_CSRF_LIFETIME_SECONDS, path="/portal",
     )
 
@@ -107,7 +112,7 @@ async def expire_overdue_guest_sessions(db: AsyncSession) -> int:
         .values(active=False)
     )
     await db.commit()
-    return result.rowcount or 0
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 async def expire_guest_sessions_loop() -> None:
@@ -150,13 +155,14 @@ def _get_client_mac(request: Request) -> str:
 
 def _portal_error(request: Request, *, mac: str, message: str) -> HTMLResponse:
     cfg = get_config().portal
-    token, is_new = _csrf_token_for(request)
+    token, _is_new = _csrf_token_for(request)
     resp = templates.TemplateResponse(request, "portal.html", {
         "request": request, "mac": mac, "ssid": cfg.guest_ssid,
         "error": message, "redirect": "", "csrf_token": token,
     })
-    if is_new:
-        _set_csrf_cookie(request, resp, token)
+    # Always (re)plant the cookie so the rendered token and the browser cookie
+    # stay in sync even if a stale/secure cookie from an earlier visit exists.
+    _set_csrf_cookie(request, resp, token)
     return resp
 
 
@@ -164,7 +170,7 @@ def _portal_error(request: Request, *, mac: str, message: str) -> HTMLResponse:
 async def landing(request: Request):
     cfg = get_config().portal
     mac = _get_client_mac(request)
-    token, is_new = _csrf_token_for(request)
+    token, _is_new = _csrf_token_for(request)
     resp = templates.TemplateResponse(request, "portal.html", {
         "request":    request,
         "mac":        mac,
@@ -172,8 +178,9 @@ async def landing(request: Request):
         "redirect":   request.query_params.get("redirect", "http://example.com"),
         "csrf_token": token,
     })
-    if is_new:
-        _set_csrf_cookie(request, resp, token)
+    # Always (re)plant the cookie so the rendered token and the browser cookie
+    # stay in sync even if a stale/secure cookie from an earlier visit exists.
+    _set_csrf_cookie(request, resp, token)
     return resp
 
 

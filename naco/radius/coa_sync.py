@@ -78,13 +78,13 @@ async def sessions_matching_conditions(
             from naco.db.models import Group
             gnames = dict((await db.execute(
                 select(Group.id, Group.name).where(Group.id.in_(gids))
-            )).all())
+            )).tuples().all())
         group_by_user = {u: gnames.get(gid, "") for u, gid in rows}
     devtype_by_mac: dict[str, str] = {}
     if macs:
         devtype_by_mac = dict((await db.execute(
             select(Device.mac_address, Device.device_type).where(Device.mac_address.in_(macs))
-        )).all())
+        )).tuples().all())
 
     matched: list[ActiveSession] = []
     for s in sessions:
@@ -183,7 +183,13 @@ def schedule_policy_coa(*conditions_sets: Any) -> None:
     task = asyncio.get_running_loop().create_task(
         coa_after_policy_change(list(conditions_sets))
     )
-    # Surface exceptions in the log instead of "task exception never retrieved".
-    task.add_done_callback(
-        lambda t: t.exception() and log.error("policy CoA task failed: %s", t.exception())
-    )
+    task.add_done_callback(_report_coa_task_failure)
+
+
+def _report_coa_task_failure(task: asyncio.Task) -> None:
+    """Surface exceptions in the log instead of "task exception never retrieved"."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("policy CoA task failed: %s", exc)

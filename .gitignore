@@ -29,6 +29,7 @@ env/
 
 # Project runtime / secrets
 .env
+.env.example
 .env.local
 config/config.local.yaml
 *.db

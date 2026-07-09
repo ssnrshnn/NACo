@@ -171,7 +171,7 @@ class GELFHandler(logging.Handler):
                 "_thread":       record.thread,
             }
             if record.exc_info:
-                payload["full_message"] = self.formatException(record.exc_info)
+                payload["full_message"] = logging.Formatter().formatException(record.exc_info)
 
             raw = json.dumps(payload).encode("utf-8")
 
@@ -189,7 +189,8 @@ class GELFHandler(logging.Handler):
             self._fallback_warning(f"emit failed: {exc}")
             with self._lock:
                 try:
-                    self._sock and self._sock.close()
+                    if self._sock is not None:
+                        self._sock.close()
                 except Exception:
                     pass
                 self._sock = None
@@ -197,7 +198,8 @@ class GELFHandler(logging.Handler):
     def close(self) -> None:
         with self._lock:
             try:
-                self._sock and self._sock.close()
+                if self._sock is not None:
+                    self._sock.close()
             except Exception:
                 pass
         super().close()

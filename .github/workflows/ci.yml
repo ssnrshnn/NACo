@@ -37,12 +37,14 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
           pip install -e .
-          pip install ruff mypy
+          # Pin the linters so the gate is reproducible: a new ruff rule or
+          # mypy release must be adopted deliberately, not break CI silently.
+          pip install "ruff==0.15.20" "mypy==1.14.1"
       - name: Ruff
         run: ruff check naco tests
       - name: Mypy
-        run: mypy --ignore-missing-imports naco
-        continue-on-error: true
+        # Gating (no more continue-on-error). Config lives in pyproject.toml.
+        run: mypy naco
 
   # ---------------------------------------------------------------------------
   # Unit tests on the supported Python matrix
@@ -53,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,7 +76,8 @@ jobs:
           NACO_CONFIG: tests/test_config.yaml
         run: |
           pytest -q --maxfail=1 --disable-warnings \
-            --cov=naco --cov-report=xml --cov-report=term-missing tests/
+            --cov=naco --cov-report=xml --cov-report=term-missing \
+            --cov-fail-under=45 tests/
       - name: Upload coverage
         if: matrix.python == env.PYTHON_VERSION
         uses: actions/upload-artifact@v4
@@ -161,6 +164,61 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ---------------------------------------------------------------------------
+  # Container image vulnerability scan + SBOM
+  # ---------------------------------------------------------------------------
+  scan:
+    name: trivy image scan + SBOM
+    runs-on: ubuntu-latest
+    needs: [lint, unit]
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image (amd64, load into local docker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: naco:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy vulnerability scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: naco:scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Upload Trivy SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+      - name: Generate SBOM (CycloneDX)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: naco:scan
+          format: cyclonedx
+          output: naco-sbom.cdx.json
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: naco-sbom.cdx.json
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
   # Dependency audit
   # ---------------------------------------------------------------------------
   audit:
@@ -175,4 +233,7 @@ jobs:
         run: |
           python -m pip install -U pip pip-audit
       - name: Audit (requirements.txt)
-        run: pip-audit -r requirements.txt --strict || true
+        # Gating: a known-vulnerable dependency fails the build. Suppress a
+        # specific advisory (with justification) via --ignore-vuln GHSA-xxxx
+        # if you ever need to unblock on an accepted risk.
+        run: pip-audit -r requirements.txt

@@ -1,43 +1,58 @@
+# NACo runtime dependencies.
+#
+# Version policy: a lower bound (>=) pins the minimum tested release; an upper
+# bound (<) guards against a breaking *major* being pulled in unattended — an
+# AAA server should never silently adopt a new major of FastAPI, SQLAlchemy,
+# Pydantic, etc. Security-critical libraries (cryptography, pillow) are left
+# without an upper bound so patch/minor security fixes flow in automatically.
+#
+# For byte-for-byte reproducible production images, generate a fully pinned,
+# hash-locked file *inside the target runtime* (matching the Dockerfile base
+# Python), e.g.:
+#     pip install pip-tools
+#     pip-compile --generate-hashes -o requirements.lock requirements.txt
+# and have deploy/Dockerfile install from requirements.lock.
+
 # ── Core framework ────────────────────────────────────────────────────────────
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
-jinja2>=3.1.3
-python-multipart>=0.0.9
+fastapi>=0.110.0,<1.0
+uvicorn[standard]>=0.29.0,<1.0
+jinja2>=3.1.3,<4.0
+python-multipart>=0.0.9,<1.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
-sqlalchemy>=2.0.29
-asyncpg>=0.29.0        # PostgreSQL async driver (production default)
-aiosqlite>=0.20.0      # SQLite async driver (dev / tests only)
-alembic>=1.13.1
+sqlalchemy>=2.0.29,<3.0
+asyncpg>=0.29.0,<1.0   # PostgreSQL async driver (production default)
+aiosqlite>=0.20.0,<1.0 # SQLite async driver (dev / tests only)
+alembic>=1.13.1,<2.0
 
 # ── Cache / Rate limiting / Sessions ──────────────────────────────────────────
-redis>=5.0.0
+redis>=5.0.0,<7.0
 
 # ── Auth / Crypto ─────────────────────────────────────────────────────────────
-bcrypt>=4.0.0
-python-jose[cryptography]>=3.3.0
-cryptography>=42.0.5
-pyotp>=2.9.0           # TOTP/2FA for admin login
-ldap3>=2.9.1           # LDAP / Active Directory authentication
+bcrypt>=4.0.0,<6.0
+PyJWT>=2.8.0,<3.0      # JWT signing/verification (replaces the unmaintained python-jose)
+cryptography>=42.0.5   # security-critical: no upper bound, take patches
+pyotp>=2.9.0,<3.0      # TOTP/2FA for admin login
+ldap3>=2.9.1,<3.0      # LDAP / Active Directory authentication
 
 # ── RADIUS protocol ───────────────────────────────────────────────────────────
-pyrad>=2.4
+pyrad>=2.4,<3.0
 
 # ── TACACS+ (pure-Python implementation bundled in this project) ──────────────
 # (no external package needed — implemented in naco/tacacs/)
 
 # ── Network / Profiling ───────────────────────────────────────────────────────
-scapy>=2.5.0           # DHCP sniffer + ARP monitor
-psutil>=5.9.8
+scapy>=2.5.0,<3.0      # DHCP sniffer + ARP monitor
+psutil>=5.9.8,<8.0
 
 # ── Captive-portal QR codes ──────────────────────────────────────────────────
-qrcode>=7.4.2
-pillow>=10.3.0         # qrcode image backend
+qrcode>=7.4.2,<9.0
+pillow>=10.3.0         # security-critical (image parsing): no upper bound
 
 # ── Pydantic / settings ───────────────────────────────────────────────────────
-pydantic>=2.7.0
+pydantic>=2.7.0,<3.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-pyyaml>=6.0.1
-click>=8.1.7
-httpx>=0.27.0          # async HTTP (webhooks, log forwarding)
+pyyaml>=6.0.1,<7.0
+click>=8.1.7,<9.0
+httpx>=0.27.0,<1.0     # async HTTP (webhooks, log forwarding)

@@ -46,11 +46,11 @@ import os
 import subprocess
 from datetime import UTC, datetime
 
+import jwt
 from fastapi import Depends, FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from jose import JWTError, jwt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -200,7 +200,7 @@ def _csrf_template_response(request_or_name, *args, **kwargs):
     return _orig_template_response(request_or_name, *args, **kwargs)
 
 
-templates.TemplateResponse = _csrf_template_response
+templates.TemplateResponse = _csrf_template_response  # type: ignore[assignment,method-assign]
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +219,10 @@ _CSRF_EXEMPT_PATHS: tuple[str, ...] = (
     "/api/v1/auth/login",
     "/api/v1/auth/totp/verify",  # bearer-auth + body-bound code
     "/api/v1/eap/",              # FreeRADIUS REST hooks — bearer-auth
+    "/portal",                   # captive portal has its own cookie-based CSRF;
+                                 # guests never hold an admin session cookie, and
+                                 # an admin browsing the portal must not have the
+                                 # admin CSRF scheme enforced on the guest form.
 )
 
 
@@ -305,7 +309,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                     return {"type": "http.request", "body": body_bytes, "more_body": False}
                 return {"type": "http.disconnect"}
 
-            request._receive = _receive  # type: ignore[attr-defined]
+            request._receive = _receive
 
         return await call_next(request)
 
@@ -474,7 +478,7 @@ def _verify_session(value: str) -> str | None:
         secret = get_config().server.session_secret
         payload = jwt.decode(value, secret, algorithms=[_SESSION_ALGORITHM])
         return payload.get("sub")
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 
@@ -833,8 +837,8 @@ async def logs_page(
         else:
             auth_stmt = auth_stmt.limit(per_page * 2)
         auth_rows = (await db.execute(auth_stmt)).scalars().all()
-        for r in auth_rows:
-            r._source = "auth"
+        for auth_row in auth_rows:
+            auth_row._source = "auth"
         merged.extend(auth_rows)
 
     if tab in ("all", "tacacs"):
@@ -849,8 +853,8 @@ async def logs_page(
         else:
             tac_stmt = tac_stmt.limit(per_page * 2)
         tac_rows = (await db.execute(tac_stmt)).scalars().all()
-        for r in tac_rows:
-            r._source = "tacacs"
+        for tac_row in tac_rows:
+            tac_row._source = "tacacs"
         merged.extend(tac_rows)
 
     # For the "all" tab, merge-sort by timestamp descending and paginate
@@ -951,6 +955,17 @@ def _form_float(form, key: str, default: float) -> float:
         return default
 
 
+def _form_str(form, key: str, default: str = "") -> str:
+    """Return a form field as a plain string.
+
+    Starlette's ``FormData.get`` is typed ``str | UploadFile``. A text field
+    that unexpectedly arrives as a file part (or is absent) collapses to
+    *default* instead of raising when treated as text downstream.
+    """
+    val = form.get(key, default)
+    return val if isinstance(val, str) else default
+
+
 @app.post("/settings/save")
 async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
     """Save a config section from a form POST and reload the in-memory config.
@@ -977,8 +992,14 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
     if section not in _ALLOWED_SECTIONS:
         return RedirectResponse(url="/settings?error=Invalid+section", status_code=303)
 
-    def _sanitize_str(val: str, max_len: int = 256) -> str:
-        """Strip control characters and enforce max length."""
+    def _sanitize_str(val: object, max_len: int = 256) -> str:
+        """Strip control characters and enforce max length.
+
+        Non-string form values (e.g. an unexpected file part, or a missing
+        field) collapse to an empty string rather than raising.
+        """
+        if not isinstance(val, str):
+            return ""
         return _re_settings.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', val)[:max_len]
 
     cfg_path = os.environ.get("NACO_CONFIG", "/etc/naco/config.yaml")
@@ -1054,7 +1075,7 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
         wh["batch_interval_seconds"]  = _form_float(form, "batch_interval_seconds", 5.0)
         # Parse raw headers textarea ("Key: Value" per line)
         headers: dict[str, str] = {}
-        for line in (form.get("headers_raw", "") or "").splitlines():
+        for line in _form_str(form, "headers_raw").splitlines():
             line = line.strip()
             if ":" in line:
                 k, _, v = line.partition(":")
@@ -1075,7 +1096,7 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
         ld["group_attribute"] = _sanitize_str(form.get("group_attribute", "memberOf"), 64)
         # Parse group_map_raw textarea ("LDAP DN = NACo group" per line)
         group_map: dict[str, str] = {}
-        for line in (form.get("group_map_raw", "") or "").splitlines():
+        for line in _form_str(form, "group_map_raw").splitlines():
             line = line.strip()
             if "=" in line:
                 k, _, v = line.partition("=")
@@ -1095,7 +1116,7 @@ async def settings_save(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Invalidate cached config so next request re-reads it
     from naco.config import get_config as _gc
-    _gc.cache_clear()  # type: ignore[attr-defined]
+    _gc.cache_clear()
 
     # Re-apply log handlers so forwarding changes take effect immediately
     from naco.core.logger import setup_logging as _setup_logging

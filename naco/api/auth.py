@@ -28,8 +28,8 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
+import jwt
 from fastapi import Depends, HTTPException, Request, status
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,7 +167,7 @@ def create_access_token(subject: str, expire_minutes: int | None = None) -> str:
 def _decode_with(secret: str, token: str) -> dict | None:
     try:
         return jwt.decode(token, secret, algorithms=[_ALGORITHM])
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 
