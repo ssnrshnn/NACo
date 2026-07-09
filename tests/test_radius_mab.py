@@ -54,16 +54,18 @@ def _mab_pkt(server: NACoRadiusServer, username: str,
 class TestMabPasswordEnforcement:
     """RFC 3580 — User-Password (when present) MUST equal the MAC."""
 
-    def test_password_mismatch_rejected(self, server: NACoRadiusServer):
+    @pytest.mark.asyncio
+    async def test_password_mismatch_rejected(self, server: NACoRadiusServer):
         pkt = _mab_pkt(server, "aabbccddeeff", "not-the-mac")
-        method, _user, result, reason = server._authenticate(pkt)
+        method, _user, result, reason = await server._authenticate(pkt)
         assert method.value == "MAB"
         assert result == AuthResult.FAILURE
         assert "User-Password does not match MAC (RFC 3580)" in reason
 
-    def test_password_mismatch_random_garbage(self, server: NACoRadiusServer):
+    @pytest.mark.asyncio
+    async def test_password_mismatch_random_garbage(self, server: NACoRadiusServer):
         pkt = _mab_pkt(server, "aabbccddeeff", "\x00\x01garbage")
-        method, _user, result, reason = server._authenticate(pkt)
+        method, _user, result, reason = await server._authenticate(pkt)
         assert method.value == "MAB"
         assert result == AuthResult.FAILURE
         assert "RFC 3580" in reason
@@ -72,9 +74,7 @@ class TestMabPasswordEnforcement:
         """A username that fails the MAC-shape check must NOT enter the MAB
         path. ``_is_mac_like`` is strict-hex, so ``"zzzz..."`` falls through
         to PAP. The PAP path needs DB access (which we don't have here) so
-        we accept any non-MAB outcome — what matters is the dispatch."""
+        we only pin the dispatch decision."""
         _mab_pkt(server, "zzzzzzzzzzzz", "zzzzzzzzzzzz")
-        # Drive the dispatch decision only — without a running event loop
-        # the PAP path would hang on `_run_sync`, so we patch it out.
         from naco.radius.server import _is_mac_like
         assert _is_mac_like("zzzzzzzzzzzz") is False

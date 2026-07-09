@@ -1,10 +1,12 @@
 """
 NACo RADIUS Server
 ==================
-A focused, pure-Python RADIUS implementation built on `pyrad`. The built-in
-server intentionally only speaks the simple, well-understood subset of
-RFC 2865/2866/3579/5176 below — anything EAP-flavoured is delegated to the
-FreeRADIUS sidecar via `/api/v1/eap/*` REST hooks.
+A focused, pure-Python RADIUS implementation. `pyrad` is used only as a
+packet codec (dictionary, encode/decode) — the transport is a native
+``asyncio`` datagram endpoint, so every request is handled concurrently on
+the event loop with no blocking accept thread and no cross-thread bridging.
+Anything EAP-flavoured is delegated to the FreeRADIUS sidecar via
+`/api/v1/eap/*` REST hooks.
 
 Supported authentication methods
 --------------------------------
@@ -17,10 +19,12 @@ Supported authentication methods
 
 Other features
 --------------
-  • RFC 2866 accounting Start/Stop/Interim-Update.
+  • RFC 2866 accounting Start/Stop/Interim-Update (request authenticator
+    verified before processing).
   • RFC 3579 Message-Authenticator validation (CVE-2024-3596 mitigation —
     "BlastRADIUS"). Enforcement is per-NAS (defaults to *required*).
-  • Hot-reloads NAS clients from the database every 30 s.
+  • Hot-reloads NAS clients from the database every 30 s (plus a
+    packet-driven refresh when an unknown NAS talks to us).
 """
 from __future__ import annotations
 
@@ -29,12 +33,13 @@ import hashlib
 import hmac
 import os
 import re
+import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC
 from typing import Any
 
 import pyrad.dictionary
 import pyrad.packet
-import pyrad.server
 
 from naco.config import get_config
 from naco.core.events import Event, EventType, bus
@@ -140,18 +145,53 @@ def parse_vlan_attr(raw: Any) -> int | None:
     # isn't a hex digit and isn't '0' (i.e. a tag).
     try:
         if s.lower().startswith("0x"):
-            return int(s[2:], 16) if s[2:] else None
-        return int(s, 10)
+            value = int(s[2:], 16) if s[2:] else None
+        else:
+            value = int(s, 10)
     except ValueError:
         return None
+    return value if value is not None and 1 <= value <= 4094 else None
 
 
 # ---------------------------------------------------------------------------
-# Custom pyrad Server sub-class
+# asyncio datagram transport
 # ---------------------------------------------------------------------------
 
-class NACoRadiusServer(pyrad.server.Server):
-    """RFC 2865/2866 server with policy engine integration."""
+class _RadiusProtocol(asyncio.DatagramProtocol):
+    """Feeds every received datagram to the server as an independent task."""
+
+    def __init__(
+        self,
+        server: NACoRadiusServer,
+        handler: Callable[[asyncio.DatagramTransport, bytes, tuple[str, int]], Awaitable[None]],
+    ) -> None:
+        self._server = server
+        self._handler = handler
+        self.transport: asyncio.DatagramTransport | None = None
+
+    def connection_made(self, transport) -> None:
+        self.transport = transport
+
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        assert self.transport is not None
+        self._server._spawn(self._handler(self.transport, data, addr), addr)
+
+    def error_received(self, exc: Exception) -> None:
+        log.debug("RADIUS transport error: %s", exc)
+
+
+class NACoRadiusServer:
+    """RFC 2865/2866 server with policy engine integration.
+
+    Fully event-loop-native: ``start()`` binds asyncio datagram endpoints for
+    the auth and acct ports and each packet is processed as its own task, so
+    a slow database call for one request never stalls the others.
+    """
+
+    #: Upper bound on in-flight packet handlers. Beyond this, new datagrams
+    #: are dropped (RADIUS clients retransmit) instead of queueing unbounded
+    #: work against the database.
+    MAX_PENDING = 1024
 
     def __init__(self) -> None:
         cfg = get_config()
@@ -160,27 +200,82 @@ class NACoRadiusServer(pyrad.server.Server):
         self._client_msgauth: dict[str, bool] = {
             c.address: c.require_message_authenticator for c in self._cfg.clients
         }
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._last_client_reload: float = 0.0
         self._client_reload_interval: float = 30.0
 
         dict_path = _DICT_PATH if os.path.isfile(_DICT_PATH) else None
-        hosts = {
-            c.address: pyrad.server.RemoteHost(c.address, c.secret.encode(), c.name)
-            for c in self._cfg.clients
-        }
+        self.dict = pyrad.dictionary.Dictionary(dict_path) if dict_path else None
 
-        super().__init__(
-            hosts=hosts,
-            dict=pyrad.dictionary.Dictionary(dict_path) if dict_path else None,
+        self._auth_transport: asyncio.DatagramTransport | None = None
+        self._acct_transport: asyncio.DatagramTransport | None = None
+        self._tasks: set[asyncio.Task] = set()
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(
+        self,
+        host: str | None = None,
+        auth_port: int | None = None,
+        acct_port: int | None = None,
+    ) -> None:
+        """Bind the auth and acct UDP endpoints (defaults from config)."""
+        loop = asyncio.get_running_loop()
+        host = host if host is not None else self._cfg.host
+        auth_port = auth_port if auth_port is not None else self._cfg.auth_port
+        acct_port = acct_port if acct_port is not None else self._cfg.acct_port
+
+        self._auth_transport, _ = await loop.create_datagram_endpoint(
+            lambda: _RadiusProtocol(self, self._handle_auth_datagram),
+            local_addr=(host, auth_port),
         )
+        self._acct_transport, _ = await loop.create_datagram_endpoint(
+            lambda: _RadiusProtocol(self, self._handle_acct_datagram),
+            local_addr=(host, acct_port),
+        )
+
+    async def stop(self) -> None:
+        """Close the transports and cancel in-flight packet handlers."""
+        for transport in (self._auth_transport, self._acct_transport):
+            if transport is not None:
+                transport.close()
+        self._auth_transport = None
+        self._acct_transport = None
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    @property
+    def auth_address(self) -> tuple[str, int]:
+        assert self._auth_transport is not None, "server not started"
+        return self._auth_transport.get_extra_info("sockname")[:2]
+
+    @property
+    def acct_address(self) -> tuple[str, int]:
+        assert self._acct_transport is not None, "server not started"
+        return self._acct_transport.get_extra_info("sockname")[:2]
+
+    def _spawn(self, coro: Awaitable[None], addr: tuple[str, int]) -> None:
+        if len(self._tasks) >= self.MAX_PENDING:
+            # Load-shed: the NAS retransmits, and answering late is worse
+            # than answering the retry — RFC 2865 §2.4.
+            log.warning("RADIUS handler backlog full — dropping datagram from %s", addr[0])
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            return
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     # ------------------------------------------------------------------
     # Hot-reload NAS clients from DB
     # ------------------------------------------------------------------
 
     def _apply_db_clients(self, db_clients: list[tuple[str, str]]) -> None:
-        """Diff DB-managed NAS clients into the live host tables."""
+        """Diff DB-managed NAS clients into the live client tables."""
         cfg_addrs = {c.address for c in self._cfg.clients}
         db_map = dict(db_clients)
 
@@ -193,7 +288,6 @@ class NACoRadiusServer(pyrad.server.Server):
                 verb = "Updated secret for" if ip in self._clients else "Hot-loaded"
                 self._clients[ip] = secret
                 self._client_msgauth.setdefault(ip, self._cfg.require_message_authenticator)
-                self.hosts[ip] = pyrad.server.RemoteHost(ip, secret.encode(), ip)
                 log.info("%s NAS client %s from database", verb, ip)
 
         # Drop DB-managed clients that were deleted or disabled.
@@ -201,25 +295,18 @@ class NACoRadiusServer(pyrad.server.Server):
             if ip not in cfg_addrs and ip not in db_map:
                 self._clients.pop(ip, None)
                 self._client_msgauth.pop(ip, None)
-                self.hosts.pop(ip, None)
                 log.info("Removed NAS client %s (deleted or disabled in database)", ip)
 
-    def _maybe_reload_db_clients(self) -> None:
+    async def _maybe_reload_db_clients(self) -> None:
         """Packet-driven refresh (belt) — the background task (braces) in
-        ``run_radius_server`` covers the case where no known NAS is talking,
-        which is exactly when a *first* NAS gets added via the UI."""
-        import time as _time
-        now = _time.monotonic()
+        ``run_radius_server_async`` covers steady-state; this path lets a
+        *first* NAS added via the UI be picked up the moment it talks to us."""
+        now = time.monotonic()
         if now - self._last_client_reload < self._client_reload_interval:
             return
         self._last_client_reload = now
-        if not self._loop:
-            return
         try:
-            db_clients = asyncio.run_coroutine_threadsafe(
-                _load_db_nas_clients(), self._loop,
-            ).result(timeout=5)
-            self._apply_db_clients(db_clients)
+            self._apply_db_clients(await _load_db_nas_clients())
         except Exception as exc:
             log.debug("NAS client reload failed: %s", exc)
 
@@ -227,33 +314,40 @@ class NACoRadiusServer(pyrad.server.Server):
     # Authentication handler
     # ------------------------------------------------------------------
 
-    def HandleAuthPacket(self, pkt: pyrad.packet.AuthPacket) -> None:
-        nas_ip = pkt.source[0]
-        self._maybe_reload_db_clients()
+    async def _handle_auth_datagram(
+        self, transport: asyncio.DatagramTransport, data: bytes, addr: tuple[str, int],
+    ) -> None:
+        nas_ip = addr[0]
 
+        if nas_ip not in self._clients:
+            await self._maybe_reload_db_clients()
         if nas_ip not in self._clients:
             log.warning("Dropping RADIUS request from unknown NAS %s", nas_ip)
             return
 
+        secret = self._clients[nas_ip].encode()
+        try:
+            pkt = pyrad.packet.AuthPacket(packet=data, secret=secret, dict=self.dict)
+        except Exception as exc:
+            log.warning("Malformed RADIUS auth datagram from %s: %s", nas_ip, exc)
+            return
+        pkt.source = addr
+
         # ── RFC 3579 / BlastRADIUS (CVE-2024-3596) -----------------------
         if not self._message_authenticator_valid(pkt, nas_ip):
             log.warning("Access-Request from %s missing/invalid Message-Authenticator", nas_ip)
-            try:
-                reply = self._make_reply(pkt, pyrad.packet.AccessReject)
-                self.SendReplyPacket(pkt.fd, reply)
-            except Exception:
-                pass
+            self._send_reply(transport, self._make_reply(pkt, pyrad.packet.AccessReject), addr)
             return
 
         try:
-            method, username, result, reason = self._authenticate(pkt)
+            method, username, result, reason = await self._authenticate(pkt)
 
             policy_vlan: int | None = None
             policy_name: str = ""
             reply_attrs: dict = {}
             if result == AuthResult.SUCCESS:
-                policy_vlan, result, reason, policy_name, reply_attrs = self._run_sync(
-                    self._apply_policy(username, pkt, method)
+                policy_vlan, result, reason, policy_name, reply_attrs = (
+                    await self._apply_policy(username, pkt, method)
                 )
 
             if result == AuthResult.SUCCESS:
@@ -279,38 +373,61 @@ class NACoRadiusServer(pyrad.server.Server):
                 reply = self._make_reply(pkt, pyrad.packet.AccessReject)
                 log.info("Access-REJECT user=%r nas=%s reason=%r", username, nas_ip, reason)
 
-            self.SendReplyPacket(pkt.fd, reply)
-            self._log_auth(pkt, username, method, result, reason, policy_name, policy_vlan)
+            self._send_reply(transport, reply, addr)
+            await self._log_auth(pkt, username, method, result, reason, policy_name, policy_vlan)
             self._publish(username, pkt, method, result, reason)
 
         except Exception as exc:
             log.exception("RADIUS auth handler error for NAS %s: %s", nas_ip, exc)
-            try:
-                self.SendReplyPacket(pkt.fd, self._make_reply(pkt, pyrad.packet.AccessReject))
-            except Exception:
-                pass
+            self._send_reply(transport, self._make_reply(pkt, pyrad.packet.AccessReject), addr)
 
     # ------------------------------------------------------------------
     # Accounting handler
     # ------------------------------------------------------------------
 
-    def HandleAcctPacket(self, pkt: pyrad.packet.AcctPacket) -> None:
-        nas_ip   = pkt.source[0]
+    async def _handle_acct_datagram(
+        self, transport: asyncio.DatagramTransport, data: bytes, addr: tuple[str, int],
+    ) -> None:
+        nas_ip = addr[0]
+
+        if nas_ip not in self._clients:
+            await self._maybe_reload_db_clients()
+        if nas_ip not in self._clients:
+            log.warning("Dropping RADIUS accounting from unknown NAS %s", nas_ip)
+            return
+
+        secret = self._clients[nas_ip].encode()
+        try:
+            pkt = pyrad.packet.AcctPacket(packet=data, secret=secret, dict=self.dict)
+        except Exception as exc:
+            log.warning("Malformed RADIUS acct datagram from %s: %s", nas_ip, exc)
+            return
+        pkt.source = addr
+
+        # RFC 2866 §3: the Request Authenticator is an MD5 over the packet
+        # and shared secret — a spoofed source cannot fabricate it.
+        try:
+            if not pkt.VerifyAcctRequest():
+                log.warning("Accounting-Request from %s failed authenticator check", nas_ip)
+                return
+        except Exception:
+            return
+
         status   = pkt.get("Acct-Status-Type", [None])[0]
         session  = pkt.get("Acct-Session-Id",  [""])[0]
         username = pkt.get("User-Name",         [""])[0]
         ip       = pkt.get("Framed-IP-Address", [""])[0]
         nas_port = str(pkt.get("NAS-Port", [""])[0])
 
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._update_session(status, session, username, ip, nas_ip, nas_port, pkt),
-                self._loop,
-            )
-
+        # Acknowledge first — the NAS must not retransmit while we write.
         reply = pkt.CreateReply()
         reply.source = pkt.source
-        self.SendReplyPacket(pkt.fd, reply)
+        self._send_reply(transport, reply, addr)
+
+        try:
+            await self._update_session(status, session, username, ip, nas_ip, nas_port, pkt)
+        except Exception as exc:
+            log.error("Accounting update failed for session %s: %s", session, exc)
 
     # ------------------------------------------------------------------
     # Message-Authenticator validation (RFC 3579)
@@ -380,15 +497,12 @@ class NACoRadiusServer(pyrad.server.Server):
     def _make_reply(pkt: pyrad.packet.AuthPacket, code: int) -> pyrad.packet.AuthPacket:
         """Build an Access-* reply with a Message-Authenticator.
 
-        Two pyrad-compat details live here so the handlers stay readable:
+        pyrad-compat details:
 
         * ``AuthPacket.CreateReply(code=…)`` raises ``TypeError`` on pyrad
           2.5 (``code`` collides with a positional arg) — the code must be
           assigned after construction.
-        * ``SendReplyPacket`` addresses the datagram to ``reply.source``,
-          which ``CreateReply`` does *not* copy from the request — without
-          it the send raises ``AttributeError`` and the NAS never hears
-          back.
+        * ``reply.source`` is kept for callers/tests that inspect it.
         * Post-BlastRADIUS clients (CVE-2024-3596 hardening) require replies
           to carry a valid MA when the request did — without it they
           silently discard our Accept/Reject and retry until timeout. pyrad
@@ -406,18 +520,29 @@ class NACoRadiusServer(pyrad.server.Server):
             pass
         return reply
 
+    @staticmethod
+    def _send_reply(
+        transport: asyncio.DatagramTransport, reply: pyrad.packet.Packet,
+        addr: tuple[str, int],
+    ) -> None:
+        """Encode and transmit *reply*; never raises into the handler."""
+        try:
+            transport.sendto(reply.ReplyPacket(), addr)
+        except Exception as exc:
+            log.error("Failed to send RADIUS reply to %s: %s", addr, exc)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _authenticate(
+    async def _authenticate(
         self, pkt: pyrad.packet.AuthPacket
     ) -> tuple[AuthMethod, str, AuthResult, str]:
         username = (pkt.get("User-Name", [""])[0] or "").strip()
         eap_msg  = pkt.get("EAP-Message", [])
 
         if _is_mac_like(username):
-            return self._authenticate_mab(username, pkt)
+            return await self._authenticate_mab(username, pkt)
 
         if eap_msg:
             # EAP is delegated to FreeRADIUS via `/api/v1/eap/*`; the built-in
@@ -431,26 +556,26 @@ class NACoRadiusServer(pyrad.server.Server):
 
         chap_pw = pkt.get("CHAP-Password", [None])[0]
         if chap_pw:
-            return self._authenticate_chap(username, chap_pw, pkt)
+            return await self._authenticate_chap(username, chap_pw, pkt)
 
-        return self._authenticate_pap(username, pkt)
+        return await self._authenticate_pap(username, pkt)
 
-    def _authenticate_pap(
+    async def _authenticate_pap(
         self, username: str, pkt: pyrad.packet.AuthPacket
     ) -> tuple[AuthMethod, str, AuthResult, str]:
         raw_pw = pkt.get("User-Password", [b""])[0]
         password = _decode_pap_password(raw_pw, pkt.secret, pkt.authenticator)
-        result, reason = self._run_sync(self._check_user_password(username, password))
+        result, reason = await self._check_user_password(username, password)
         return AuthMethod.PAP, username, result, reason
 
-    def _authenticate_chap(
+    async def _authenticate_chap(
         self, username: str, chap_pw: bytes, pkt: pyrad.packet.AuthPacket
     ) -> tuple[AuthMethod, str, AuthResult, str]:
         chap_id   = bytes([chap_pw[0]])
         chap_resp = chap_pw[1:17]
         challenge = pkt.get("CHAP-Challenge", [pkt.authenticator])[0]
 
-        db_password = self._run_sync(self._get_cleartext_password(username))
+        db_password = await self._get_cleartext_password(username)
         if db_password is None:
             return (
                 AuthMethod.CHAP, username, AuthResult.FAILURE,
@@ -461,7 +586,7 @@ class NACoRadiusServer(pyrad.server.Server):
             return AuthMethod.CHAP, username, AuthResult.SUCCESS, ""
         return AuthMethod.CHAP, username, AuthResult.FAILURE, "CHAP verify failed"
 
-    def _authenticate_mab(
+    async def _authenticate_mab(
         self, mac_raw: str, pkt: pyrad.packet.AuthPacket
     ) -> tuple[AuthMethod, str, AuthResult, str]:
         """MAC Authentication Bypass — RFC 3580.
@@ -490,10 +615,10 @@ class NACoRadiusServer(pyrad.server.Server):
                     "MAB rejected: User-Password does not match MAC (RFC 3580)",
                 )
 
-        result, reason = self._run_sync(self._check_device_authorized(mac))
+        result, reason = await self._check_device_authorized(mac)
         return AuthMethod.MAB, mac, result, reason
 
-    # ---- DB helpers (run from sync context via _run_sync) ----
+    # ---- DB helpers ----
 
     async def _check_user_password(self, username: str, password: str) -> tuple[AuthResult, str]:
         from datetime import datetime
@@ -693,17 +818,9 @@ class NACoRadiusServer(pyrad.server.Server):
                         name, value, username, last_exc,
                     )
 
-    # ---- Sync bridge ----
-
-    def _run_sync(self, coro) -> Any:
-        if self._loop is None:
-            raise RuntimeError("RADIUS server event loop not initialised")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=10)
-
     # ---- Auth logging ----
 
-    def _log_auth(
+    async def _log_auth(
         self, pkt, username, method, result, reason,
         policy_name: str = "", vlan: int | None = None,
     ) -> None:
@@ -714,11 +831,10 @@ class NACoRadiusServer(pyrad.server.Server):
         except ValueError:
             mac = mac_raw
 
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._write_auth_log(username, mac, nas_ip, method, result, reason, policy_name, vlan),
-                self._loop,
-            )
+        try:
+            await self._write_auth_log(username, mac, nas_ip, method, result, reason, policy_name, vlan)
+        except Exception as exc:
+            log.error("Failed to write auth log for user=%r: %s", username, exc)
 
     async def _write_auth_log(
         self, username, mac, nas_ip, method, result, reason,
@@ -779,9 +895,9 @@ async def _load_db_nas_clients() -> list[tuple[str, str]]:
 
 
 async def _client_refresh_loop(server: NACoRadiusServer) -> None:
-    """Periodic NAS reload. Without this, a freshly-added first NAS is never
-    picked up: pyrad drops packets from unknown hosts *before*
-    ``HandleAuthPacket`` runs, so the packet-driven reload can't fire."""
+    """Periodic NAS reload. Without this, a freshly-added first NAS is only
+    picked up by the (rate-limited) packet-driven refresh; the loop keeps the
+    table converging even when nothing is talking to us."""
     while True:
         await asyncio.sleep(server._client_reload_interval)
         try:
@@ -791,70 +907,32 @@ async def _client_refresh_loop(server: NACoRadiusServer) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Public launchers
+# Public launcher
 # ---------------------------------------------------------------------------
 
-def run_radius_server(loop: asyncio.AbstractEventLoop) -> None:
-    """Start the (blocking) RADIUS server in the calling thread."""
+async def run_radius_server_async() -> None:
+    """Run the RADIUS server on the current event loop until cancelled."""
     global _active_radius_server
     cfg = get_config().radius
     server = NACoRadiusServer()
-    server._loop = loop
     _active_radius_server = server
 
     try:
-        db_clients = asyncio.run_coroutine_threadsafe(
-            _load_db_nas_clients(), loop,
-        ).result(timeout=10)
-        for ip, secret in db_clients:
-            if ip not in server._clients:
-                server._clients[ip] = secret
-                server._client_msgauth.setdefault(ip, cfg.require_message_authenticator)
-                server.hosts[ip] = pyrad.server.RemoteHost(ip, secret.encode(), ip)
-        if db_clients:
-            log.info("Loaded %d NAS client(s) from database", len(db_clients))
+        server._apply_db_clients(await _load_db_nas_clients())
     except Exception as exc:
         log.warning("Could not load NAS clients from DB: %s", exc)
 
-    refresh_future = asyncio.run_coroutine_threadsafe(
-        _client_refresh_loop(server), loop,
-    )
-
-    server.BindToAddress(cfg.host)
+    await server.start()
     log.info(
         "RADIUS server listening on %s:%d (auth) %s:%d (acct)",
         cfg.host, cfg.auth_port, cfg.host, cfg.acct_port,
     )
+
+    refresh_task = asyncio.create_task(_client_refresh_loop(server))
     try:
-        server.Run()
+        await asyncio.Event().wait()  # serve until cancelled
     finally:
-        refresh_future.cancel()
-
-
-async def run_radius_server_async() -> None:
-    """Async-friendly launcher.
-
-    pyrad's ``server.Server.Run()`` is a blocking ``select`` loop, so we run
-    it in an executor thread. The whole sub-tree (DB, policy engine) remains
-    async — the RADIUS thread bridges into the main event loop via
-    ``asyncio.run_coroutine_threadsafe``.
-
-    A future refactor can move to ``pyrad.server_async`` to drop the thread.
-    """
-    global _active_radius_server
-    loop = asyncio.get_running_loop()
-
-    def _runner() -> None:
-        run_radius_server(loop)
-
-    thread_task = loop.run_in_executor(None, _runner)
-    try:
-        await thread_task
-    except asyncio.CancelledError:
-        srv = _active_radius_server
-        if srv is not None:
-            try:
-                srv._running = False
-            except Exception:
-                pass
-        raise
+        refresh_task.cancel()
+        await asyncio.gather(refresh_task, return_exceptions=True)
+        await server.stop()
+        _active_radius_server = None

@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **asyncio-native RADIUS server.** The built-in RADIUS server no longer
+  runs pyrad's blocking `select` loop in a worker thread — `pyrad` is now
+  only the packet codec, and the transport is an `asyncio` datagram
+  endpoint. Every request is handled as an independent event-loop task, so
+  one slow database call no longer stalls every other authentication
+  in flight (the old bridge serialized all packets through a single
+  thread). In-flight handlers are capped (1024) with load-shedding —
+  NASes retransmit by design. Accounting-Request authenticators are now
+  verified (RFC 2866 §3) before processing.
+
+### Added
+
+- **Protocol robustness (fuzz) suite** — Hypothesis property tests feed
+  adversarial bytes to the RADIUS datagram handlers, the TACACS+
+  header/AV-pair/obfuscation helpers and every pure parser; handlers must
+  never raise and never answer undecodable garbage.
+- **`bench/radius_bench.py`** — asyncio RADIUS load generator (MAB or PAP)
+  reporting auth/s and latency percentiles against any RFC 2865 server.
+
+### Fixed
+
+- `parse_vlan_attr` accepted out-of-range VLAN IDs from text attribute
+  values (e.g. `"99999"`, `"0"`); all input forms now clamp to 1–4094.
+
 ## [2.2.1] — 2026-07-09
 
 ### Fixed

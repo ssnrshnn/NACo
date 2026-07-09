@@ -23,7 +23,9 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def radius_server(free_udp_port, monkeypatch):
-    """Start NACoRadiusServer in a thread on ``free_udp_port`` and 1813."""
+    """Run the async NACoRadiusServer on its own loop in a worker thread."""
+    import asyncio
+
     from naco.config import get_config
     cfg = get_config()
     cfg.radius.host = "127.0.0.1"
@@ -33,20 +35,18 @@ def radius_server(free_udp_port, monkeypatch):
     from naco.radius.server import NACoRadiusServer
 
     server = NACoRadiusServer()
-    server.BindToAddress(cfg.radius.host)
-
-    import asyncio
     loop = asyncio.new_event_loop()
-    server._loop = loop
+
+    async def _start() -> None:
+        await server.start()
 
     t_loop = threading.Thread(target=loop.run_forever, daemon=True)
     t_loop.start()
-
-    t_srv = threading.Thread(target=server.Run, daemon=True)
-    t_srv.start()
-    time.sleep(0.5)
+    asyncio.run_coroutine_threadsafe(_start(), loop).result(timeout=10)
+    time.sleep(0.1)
     yield server, cfg
 
+    asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=10)
     loop.call_soon_threadsafe(loop.stop)
 
 
