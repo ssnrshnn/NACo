@@ -188,8 +188,10 @@ jobs:
           push: false
           load: true
           tags: naco:scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No layer cache: a cached apt layer freezes OS packages at the
+          # date the layer was first built, so the scan reports (and gates
+          # on) vulnerabilities that a fresh build already fixes.
+          no-cache: true
       - name: Trivy vulnerability scan (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
