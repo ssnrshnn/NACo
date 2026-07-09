@@ -1,7 +1,7 @@
 # Roadmap
 
 Direction only — order and scope shift based on user feedback.
-Anything already shipped lives in [`CHANGELOG.md`](../CHANGELOG.md).
+Anything already shipped lives in [`CHANGELOG.md`](https://github.com/ssnrshnn/NACo/blob/main/CHANGELOG.md).
 
 ## v2.2.0 — secrets-at-rest leftovers & day-two operability
 

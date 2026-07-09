@@ -9,7 +9,7 @@ Beyond VLANs, policies can attach **vendor-specific attributes (VSAs)** to the
 Access-Accept — user roles, bandwidth limits, admin privilege levels. Add them
 in *Policies → Add Policy → RADIUS reply attributes* (or the
 `reply_attributes` field on `POST /api/v1/policies`). Attribute names must
-exist in [`naco/radius/dictionary`](../naco/radius/dictionary); adding a new
+exist in [`naco/radius/dictionary`](https://github.com/ssnrshnn/NACo/tree/main/naco/radius/dictionary); adding a new
 VSA is a two-line dictionary edit plus a restart.
 
 Example policy body:

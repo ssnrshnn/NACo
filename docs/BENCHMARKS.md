@@ -1,6 +1,6 @@
 # RADIUS throughput benchmarks
 
-Reproducible with [`bench/radius_bench.py`](../bench/radius_bench.py), an
+Reproducible with [`bench/radius_bench.py`](https://github.com/ssnrshnn/NACo/blob/main/bench/radius_bench.py), an
 asyncio load generator that keeps a fixed number of authentications in
 flight and reports throughput plus latency percentiles.
 
@@ -47,4 +47,4 @@ median latency under identical load).
 
 Numbers are from 2026-07-09 on commit `437a814`. Rerun on your own
 hardware before capacity planning; scale-out guidance (multiple `radius`
-role replicas) lives in [`deploy/helm/naco`](../deploy/helm/naco).
+role replicas) lives in [the Helm chart](kubernetes.md).

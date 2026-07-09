@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Profiler write coalescing** — DHCP/ARP observations are merged per MAC
   in memory and flushed as one transaction every 5 s, instead of one
   SELECT + UPSERT round-trip per sniffed packet.
+- **Documentation site** — mkdocs-material site published to GitHub Pages
+  (`.github/workflows/docs.yml`, strict build): install, configuration,
+  NAS setup, 802.1X/EAP, RadSec, vendor matrix, day-two ops, backup,
+  Kubernetes/Helm, observability, security model, benchmarks, roadmap.
 - **Helm chart CI + chart hardening** — CI gains a `helm` job (lint,
   template render for default and all-workloads values, then a kind
   install of the freshly-built image that must reach Ready). Verified

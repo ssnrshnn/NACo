@@ -1,0 +1,62 @@
+site_name: NACo
+site_description: Container-native Network Access Control & AAA — RADIUS, TACACS+, 802.1X, policy engine, captive portal.
+site_url: https://ssnrshnn.github.io/NACo/
+repo_url: https://github.com/ssnrshnn/NACo
+repo_name: ssnrshnn/NACo
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: img/emblem-192.png
+  favicon: img/favicon-32.png
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: cyan
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: cyan
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: install.md
+      - Configuration: configuration.md
+      - NAS / switch setup: nas-setup.md
+  - Guides:
+      - 802.1X / EAP: eap.md
+      - RadSec (RADIUS over TLS): RADSEC.md
+      - Vendor attributes: VENDORS.md
+      - Day-two operations: operations.md
+      - Backup & restore: backup.md
+      - Kubernetes (Helm): kubernetes.md
+      - Observability: observability.md
+  - Reference:
+      - Security model: security.md
+      - Benchmarks: BENCHMARKS.md
+      - Roadmap: ROADMAP.md
