@@ -68,21 +68,29 @@ async def _worker(
             await asyncio.sleep(0.001)
             continue
         pkt_id = id_pool.pop()
-        pkt = pyrad.packet.AuthPacket(secret=secret, id=pkt_id, dict=dictionary)
-        if args.mac:
-            ident = args.mac.replace(":", "").replace("-", "").lower()
-            pkt["User-Name"] = ident
-            pkt["User-Password"] = pkt.PwCrypt(ident)
-        else:
-            pkt["User-Name"] = args.user
-            pkt["User-Password"] = pkt.PwCrypt(args.password)
-        pkt.add_message_authenticator()
+        try:
+            pkt = pyrad.packet.AuthPacket(secret=secret, id=pkt_id, dict=dictionary)
+            if args.mac:
+                ident = args.mac.replace(":", "").replace("-", "").lower()
+                pkt["User-Name"] = ident
+                pkt["User-Password"] = pkt.PwCrypt(ident)
+            else:
+                pkt["User-Name"] = args.user
+                pkt["User-Password"] = pkt.PwCrypt(args.password)
+            pkt.add_message_authenticator()
+            wire = pkt.RequestPacket()
+        except Exception:
+            # pyrad quirk: an encrypted password that happens to start with
+            # b"0x" trips EncodeOctets' hex-string path. Skip and re-roll —
+            # the random request authenticator changes the ciphertext.
+            id_pool.append(pkt_id)
+            continue
 
         fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
         proto.pending[pkt_id] = fut
         started = time.perf_counter()
         assert proto.transport is not None
-        proto.transport.sendto(pkt.RequestPacket())
+        proto.transport.sendto(wire)
         try:
             data = await asyncio.wait_for(fut, timeout=args.timeout)
         except TimeoutError:
