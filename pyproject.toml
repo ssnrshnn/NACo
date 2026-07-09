@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "naco"
-version = "2.2.1"
+version = "2.3.0"
 description = "NACo — a modern, container-native Network Access Control & AAA server"
 readme = "README.md"
 license = { text = "MIT" }
