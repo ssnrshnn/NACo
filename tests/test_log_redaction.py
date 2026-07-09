@@ -104,3 +104,31 @@ class TestBadFormatString:
         rec = _make_record("expected two args: %s %s", "only-one")
         # The filter itself must not raise.
         assert SecretRedactionFilter().filter(rec) is True
+
+
+def test_setup_logging_survives_readonly_log_dir(monkeypatch, tmp_path):
+    """Read-only filesystems (Kubernetes readOnlyRootFilesystem) must not
+    crash startup — file logging is skipped, stdout logging remains."""
+    import logging
+
+    from naco.config import get_config
+    from naco.core.logger import setup_logging
+
+    cfg = get_config().model_copy(deep=True)
+    ro_dir = tmp_path / "ro"
+    ro_dir.mkdir()
+    cfg.server.log_file = str(ro_dir / "naco.log")
+    ro_dir.chmod(0o555)
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    import pathlib
+    monkeypatch.setattr(pathlib.Path, "mkdir", _raise_oserror)
+    monkeypatch.setattr("naco.config.get_config", lambda: cfg)
+    monkeypatch.setattr("naco.core.logger.get_config", lambda: cfg, raising=False)
+
+    try:
+        setup_logging()  # must not raise
+    finally:
+        logging.getLogger().handlers.clear()

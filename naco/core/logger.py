@@ -453,8 +453,11 @@ def setup_logging(cfg: AppConfig | None = None) -> logging.Logger:
         )
         fh.setFormatter(formatter)
         root.addHandler(fh)
-    except PermissionError:
-        root.warning("Cannot write to log file %s — file logging disabled", log_path)
+    except OSError as exc:
+        # PermissionError, read-only filesystem (Kubernetes
+        # readOnlyRootFilesystem), missing mount — stdout logging stays up.
+        root.warning("Cannot write to log file %s (%s) — file logging disabled",
+                     log_path, exc)
 
     # ── 3. File — auth.log (RADIUS + TACACS+ events, JSON per line) ──────
     auth_log_path = log_path.parent / "auth.log"
@@ -627,8 +630,9 @@ def _make_rotating(path: Path, max_bytes: int, backup_count: int,
         if log_filter:
             h.addFilter(log_filter)
         return h
-    except PermissionError:
-        sys.stderr.write(f"[NACo] Cannot write to {path} — skipping\n")
+    except OSError as exc:
+        # Permission denied or read-only filesystem — skip file logging.
+        sys.stderr.write(f"[NACo] Cannot write to {path} ({exc}) — skipping\n")
         return None
 
 

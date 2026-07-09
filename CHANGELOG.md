@@ -37,6 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Profiler write coalescing** — DHCP/ARP observations are merged per MAC
   in memory and flushed as one transaction every 5 s, instead of one
   SELECT + UPSERT round-trip per sniffed packet.
+- **Helm chart CI + chart hardening** — CI gains a `helm` job (lint,
+  template render for default and all-workloads values, then a kind
+  install of the freshly-built image that must reach Ready). Verified
+  fixes it forced: the image no longer setcaps the main python binary
+  (a file-capability interpreter cannot exec under
+  `allowPrivilegeEscalation: false` — every capability-dropped pod
+  crashlooped); a dedicated `python3-netraw` copy carries `cap_net_raw`
+  for the profiler (compose and the profiler DaemonSet use it); chart
+  pods get emptyDir mounts for `/var/log/naco` and `/var/lib/naco`
+  (readOnlyRootFilesystem); probe `timeoutSeconds: 5` (the kubelet's 1 s
+  default flapped on the DB-backed `/ready`); and file logging now
+  degrades to stdout on *any* OSError (read-only filesystem), not just
+  PermissionError.
 - **Enterprise LDAP/AD depth** — `ldap.servers` failover pool (tried in
   order, dead controllers skipped and retried later), `ldap.start_tls`,
   `ldap.connect_timeout`, and `ldap.nested_groups` which resolves

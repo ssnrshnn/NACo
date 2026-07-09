@@ -223,6 +223,69 @@ jobs:
   # ---------------------------------------------------------------------------
   # Dependency audit
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Helm chart: lint + template render + kind install smoke test
+  # ---------------------------------------------------------------------------
+  helm:
+    name: helm lint + kind install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint
+        run: helm lint deploy/helm/naco
+      - name: Template (default and all-workloads values)
+        run: |
+          helm template smoke deploy/helm/naco > /dev/null
+          helm template smoke deploy/helm/naco \
+            --set radius.enabled=true \
+            --set tacacs.enabled=true \
+            --set profiler.enabled=true \
+            --set api.ingress.enabled=true > /dev/null
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image for the cluster
+        # Hermetic: the smoke test runs the code under review, not whatever
+        # :latest happens to be on GHCR.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          tags: naco:helm-smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Load image into kind
+        run: kind load docker-image naco:helm-smoke --name chart-testing
+      - name: Install chart (api-only, SQLite, no migration hook)
+        # Smoke goal: the chart installs and the API pod becomes Ready on a
+        # bare cluster. SQLite + in-memory cache avoids standing up
+        # Postgres/Redis; the migration hook is skipped for the same reason.
+        # Generated secrets keep the placeholder-secret startup guard happy.
+        run: |
+          helm install smoke deploy/helm/naco \
+            --set image.repository=naco \
+            --set image.tag=helm-smoke \
+            --set image.pullPolicy=Never \
+            --set migrations.enabled=false \
+            --set radius.enabled=false \
+            --set workers.enabled=false \
+            --set secrets.values.NACO_DB_URL="sqlite+aiosqlite:////var/lib/naco/naco.db" \
+            --set secrets.values.NACO_REDIS_URL="" \
+            --set secrets.values.NACO_SESSION_SECRET="$(openssl rand -hex 32)" \
+            --set secrets.values.NACO_API_SECRET="$(openssl rand -hex 32)" \
+            --set secrets.values.NACO_CSRF_SECRET="$(openssl rand -hex 32)" \
+            --set secrets.values.NACO_ADMIN_PASSWORD="$(openssl rand -hex 16)" \
+            --wait --timeout 5m
+      - name: Diagnose on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl describe pods -l app.kubernetes.io/instance=smoke
+          kubectl logs -l app.kubernetes.io/instance=smoke --tail=100 --all-containers || true
+
   audit:
     name: pip-audit
     runs-on: ubuntu-latest

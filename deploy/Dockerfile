@@ -64,9 +64,13 @@ RUN apt-get update \
 # The profiler sniffs DHCP/ARP with raw sockets. `cap_add: NET_RAW` on the
 # container grants the capability to the *bounding set* only — a non-root
 # process still can't open AF_PACKET sockets unless the binary carries file
-# capabilities. Scope: any Python code in this container may open raw
-# sockets; acceptable for a network-access-control appliance.
-RUN setcap cap_net_raw+eip "$(readlink -f /usr/local/bin/python3)"
+# capabilities. The caps live on a dedicated interpreter copy
+# (`python3-netraw`, used when the profiler role runs) instead of the main
+# python3: a binary carrying file capabilities cannot exec under
+# `allowPrivilegeEscalation: false` (no_new_privs), which would crashloop
+# every capability-dropped Kubernetes pod at `exec python`.
+RUN cp "$(readlink -f /usr/local/bin/python3)" /usr/local/bin/python3-netraw \
+ && setcap cap_net_raw+eip /usr/local/bin/python3-netraw
 
 # Unprivileged runtime user.
 RUN groupadd --system --gid 10001 naco \

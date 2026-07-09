@@ -85,6 +85,11 @@ services:
     cap_add:
       - NET_RAW       # required by the Scapy DHCP/ARP profiler
       - NET_ADMIN
+    # python3-netraw is the interpreter copy carrying cap_net_raw file
+    # capabilities — the all-in-one process includes the profiler, which
+    # needs raw sockets as a non-root user. Plain `python` works too if
+    # the profiler is disabled.
+    command: ["python3-netraw", "-m", "naco.main"]
     environment:
       NACO_CONFIG:          /etc/naco/config.yaml
       NACO_DB_URL:          postgresql+asyncpg://${NACO_DB_USER:-naco}:${NACO_DB_PASSWORD}@127.0.0.1:5432/${NACO_DB_NAME:-naco}

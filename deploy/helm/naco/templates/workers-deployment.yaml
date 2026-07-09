@@ -59,12 +59,14 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /api/v1/health/ready
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             {{- toYaml .Values.workers.resources | nindent 12 }}
           volumeMounts:

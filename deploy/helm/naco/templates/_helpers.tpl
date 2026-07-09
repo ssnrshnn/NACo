@@ -101,6 +101,10 @@ Config volume + mount shared by every workload.
     name: {{ include "naco.configMapName" . }}
 - name: tmp
   emptyDir: {}
+- name: var-log
+  emptyDir: {}
+- name: var-lib
+  emptyDir: {}
 {{- end }}
 
 {{- define "naco.configVolumeMount" -}}
@@ -109,4 +113,10 @@ Config volume + mount shared by every workload.
   readOnly: true
 - name: tmp
   mountPath: /tmp
+{{- /* Writable log/data dirs under readOnlyRootFilesystem: rotated file
+       logs and the SQLite dev database need a real mount. */}}
+- name: var-log
+  mountPath: /var/log/naco
+- name: var-lib
+  mountPath: /var/lib/naco
 {{- end }}

@@ -36,8 +36,14 @@ spec:
         - name: profiler
           image: {{ include "naco.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # python3-netraw is the image's interpreter copy carrying
+          # cap_net_raw file capabilities; gaining them at exec is a
+          # privilege escalation, so no_new_privs must stay off here.
+          # Every other role runs the uncapped python under
+          # allowPrivilegeEscalation: false.
+          command: ["/usr/bin/tini", "--", "python3-netraw", "-m", "naco.main"]
           securityContext:
-            allowPrivilegeEscalation: false
+            allowPrivilegeEscalation: true
             readOnlyRootFilesystem: true
             capabilities:
               drop:
@@ -65,12 +71,14 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /api/v1/health/ready
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             {{- toYaml .Values.profiler.resources | nindent 12 }}
           volumeMounts:
