@@ -77,10 +77,24 @@ class ProfilerConfig(BaseModel):
     oui_db: str = "/var/lib/naco/oui.csv"
 
 
+_KNOWN_ROLES = frozenset({"api", "radius", "tacacs", "profiler", "workers"})
+
+
 class ServerConfig(BaseModel):
     name: str = "NACo-01"
     host: str = "0.0.0.0"
     port: int = 8080
+    # Which subsystems this process runs. "all" (the default) is the classic
+    # all-in-one deployment. Splitting NACo into horizontally-scalable roles:
+    #   api      – HTTP UI/REST/portal/EAP hooks (always served for probes)
+    #   radius   – RADIUS auth/acct/CoA UDP server
+    #   tacacs   – TACACS+ server
+    #   profiler – passive device profiler (needs host networking)
+    #   workers  – singleton maintenance loops (guest expiry, log retention,
+    #              stale-session cleanup, webhook dispatch) — run on ONE replica
+    # The HTTP server, metrics collector, and policy-invalidation subscriber
+    # run on every replica regardless of role.
+    roles: list[str] = ["all"]
     # Shared secret used to sign the browser session cookie (HS256).
     session_secret: str = "change_me_session_secret"
     # Independent secret used to sign API JWT bearer tokens.
@@ -98,6 +112,11 @@ class ServerConfig(BaseModel):
     debug: bool = False
     log_level: str = "INFO"
     log_file: str = "/var/log/naco/naco.log"
+
+    def has_role(self, role: str) -> bool:
+        """True if this process should run *role* (``all`` implies every role)."""
+        wanted = {r.strip().lower() for r in self.roles if r.strip()} or {"all"}
+        return "all" in wanted or role in wanted
 
 
 class LogSyslogConfig(BaseModel):
@@ -174,6 +193,22 @@ class DatabaseConfig(BaseModel):
     # `sqlite+aiosqlite:///./naco-dev.db`.
     url: str = "postgresql+asyncpg://naco:naco@postgres:5432/naco"
 
+    # Connection-pool tuning (PostgreSQL only; ignored for SQLite). When
+    # running N API replicas, keep pool_size + max_overflow small enough that
+    # N × (pool_size + max_overflow) stays under Postgres `max_connections`,
+    # or front the database with PgBouncer (see `pgbouncer` below).
+    pool_size: int = 10
+    max_overflow: int = 20
+    pool_timeout: int = 30       # seconds to wait for a free connection
+    pool_recycle: int = 1800     # recycle connections older than this (seconds)
+    pool_pre_ping: bool = True   # validate connections before use
+
+    # Set true when connecting through PgBouncer (or another server-side
+    # transaction pooler). This switches SQLAlchemy to NullPool — PgBouncer
+    # owns the pooling — and disables asyncpg's prepared-statement cache with
+    # unique statement names, which is required for transaction-pooling mode.
+    pgbouncer: bool = False
+
 
 class EapConfig(BaseModel):
     """Pre-shared bearer token used by FreeRADIUS to call /api/v1/eap/*."""
@@ -240,9 +275,34 @@ def get_config() -> AppConfig:
         if val:
             server[key] = int(val) if key == "port" else val
 
+    # Role selection: NACO_ROLES="api,radius" (comma-separated). Blank/unset
+    # keeps whatever the YAML says (default: all-in-one).
+    roles_env = os.environ.get("NACO_ROLES")
+    if roles_env:
+        parsed = [r.strip() for r in roles_env.split(",") if r.strip()]
+        if parsed:
+            server["roles"] = parsed
+
     db_url = os.environ.get("NACO_DB_URL")
     if db_url:
         data.setdefault("database", {})["url"] = db_url
+
+    # Connection-pool tuning via env (handy for per-replica sizing in k8s).
+    for env_var, key in (
+        ("NACO_DB_POOL_SIZE", "pool_size"),
+        ("NACO_DB_MAX_OVERFLOW", "max_overflow"),
+        ("NACO_DB_POOL_TIMEOUT", "pool_timeout"),
+        ("NACO_DB_POOL_RECYCLE", "pool_recycle"),
+    ):
+        val = os.environ.get(env_var)
+        if val:
+            data.setdefault("database", {})[key] = int(val)
+
+    pgbouncer = os.environ.get("NACO_DB_PGBOUNCER")
+    if pgbouncer:
+        data.setdefault("database", {})["pgbouncer"] = pgbouncer.lower() in (
+            "1", "true", "yes", "on"
+        )
 
     cache_url = os.environ.get("NACO_REDIS_URL")
     if cache_url:
@@ -272,11 +332,19 @@ _PLACEHOLDER_VALUES = {
     "change_me_csrf_secret",
     "NACo@admin1",
     "tacacs_secret",
+    "guest_password",
 }
+
+# Prefixes used by the shipped config.yaml / .env.example placeholders. Matched
+# case-insensitively so "CHANGE_ME_…", "change_me_…", and "REPLACE_ME_…" are all
+# caught — a real deployment must rotate every one of these.
+_PLACEHOLDER_PREFIXES = ("replace_me", "change_me")
 
 
 def _is_placeholder(value: str) -> bool:
-    return value in _PLACEHOLDER_VALUES or value.startswith("REPLACE_ME")
+    if value in _PLACEHOLDER_VALUES:
+        return True
+    return value.lower().startswith(_PLACEHOLDER_PREFIXES)
 
 
 def check_production_secrets(cfg: AppConfig) -> list[str]:
@@ -296,10 +364,24 @@ def check_production_secrets(cfg: AppConfig) -> list[str]:
             problems.append(f"{name} is still the placeholder default")
     if cfg.tacacs.enabled and _is_placeholder(cfg.tacacs.key):
         problems.append("tacacs.key is still the placeholder default")
-    for client in cfg.tacacs.clients if cfg.tacacs.enabled else []:
-        if _is_placeholder(client.key):
-            problems.append(f"tacacs.clients[{client.address}].key is a placeholder")
-    for client in cfg.radius.clients if cfg.radius.enabled else []:
-        if _is_placeholder(client.secret):
-            problems.append(f"radius.clients[{client.name}].secret is a placeholder")
+    for tac_client in cfg.tacacs.clients if cfg.tacacs.enabled else []:
+        if _is_placeholder(tac_client.key):
+            problems.append(f"tacacs.clients[{tac_client.address}].key is a placeholder")
+    for rad_client in cfg.radius.clients if cfg.radius.enabled else []:
+        if _is_placeholder(rad_client.secret):
+            problems.append(f"radius.clients[{rad_client.name}].secret is a placeholder")
     return problems
+
+
+def check_weak_secrets(cfg: AppConfig) -> list[str]:
+    """Return non-fatal secret-hygiene warnings (empty = all good).
+
+    Unlike :func:`check_production_secrets`, these do **not** block startup: a
+    placeholder here weakens a single feature (e.g. the guest Wi-Fi PSK) rather
+    than compromising the integrity of the whole NAC, so the service still
+    boots but the operator is warned loudly.
+    """
+    warnings: list[str] = []
+    if cfg.portal.enabled and _is_placeholder(cfg.portal.guest_psk):
+        warnings.append("portal.guest_psk is still the placeholder default")
+    return warnings

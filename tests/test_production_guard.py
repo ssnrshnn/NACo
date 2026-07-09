@@ -8,16 +8,30 @@ import pytest
 
 from naco.config import (
     AppConfig,
+    PortalConfig,
     RadiusClientConfig,
     ServerConfig,
     TacacsConfig,
     check_production_secrets,
+    check_weak_secrets,
 )
 
 REAL = {
     "session_secret": "a" * 32, "api_secret": "b" * 32, "csrf_secret": "c" * 32,
     "admin_password": "Str0ng-adm1n-pass",
 }
+
+# Portal is enabled by default with a placeholder PSK; a fully-clean config
+# must also supply a real one.
+REAL_PORTAL = PortalConfig(guest_psk="Str0ng-Gu3st-PSK")
+
+
+def _clean_config() -> AppConfig:
+    return AppConfig(
+        server=ServerConfig(**REAL),
+        tacacs=TacacsConfig(key="x" * 32),
+        portal=REAL_PORTAL,
+    )
 
 
 def test_default_config_flags_all_placeholders():
@@ -31,11 +45,34 @@ def test_default_config_flags_all_placeholders():
 
 
 def test_real_secrets_pass():
+    assert check_production_secrets(_clean_config()) == []
+
+
+def test_change_me_prefix_is_placeholder():
+    # config.yaml ships "CHANGE_ME_…" placeholders — these must be caught too.
+    cfg = AppConfig(server=ServerConfig(**{**REAL, "csrf_secret": "CHANGE_ME_csrf_secret_now"}))
+    assert any("csrf_secret" in p for p in check_production_secrets(cfg))
+
+
+def test_guest_psk_placeholder_is_warning_not_blocker():
+    # A placeholder guest Wi-Fi PSK is a non-fatal warning: it must NOT appear
+    # in the boot-blocking check, but SHOULD appear in the weak-secret warnings.
     cfg = AppConfig(
         server=ServerConfig(**REAL),
         tacacs=TacacsConfig(key="x" * 32),
+        portal=PortalConfig(guest_psk="CHANGE_ME_guest_wifi_password"),
     )
     assert check_production_secrets(cfg) == []
+    assert any("portal.guest_psk" in w for w in check_weak_secrets(cfg))
+
+
+def test_guest_psk_not_warned_when_portal_disabled():
+    cfg = AppConfig(
+        server=ServerConfig(**REAL),
+        tacacs=TacacsConfig(key="x" * 32),
+        portal=PortalConfig(enabled=False, guest_psk="guest_password"),
+    )
+    assert check_weak_secrets(cfg) == []
 
 
 def test_replace_me_prefix_is_placeholder():
@@ -44,7 +81,11 @@ def test_replace_me_prefix_is_placeholder():
 
 
 def test_disabled_tacacs_key_not_flagged():
-    cfg = AppConfig(server=ServerConfig(**REAL), tacacs=TacacsConfig(enabled=False))
+    cfg = AppConfig(
+        server=ServerConfig(**REAL),
+        tacacs=TacacsConfig(enabled=False),
+        portal=REAL_PORTAL,
+    )
     assert check_production_secrets(cfg) == []
 
 
@@ -75,7 +116,7 @@ def test_main_allows_placeholders_in_debug(monkeypatch):
 def test_main_allows_real_secrets(monkeypatch):
     import naco.main as main_mod
 
-    cfg = AppConfig(server=ServerConfig(**REAL), tacacs=TacacsConfig(key="x" * 32))
+    cfg = _clean_config()
     monkeypatch.setattr(main_mod, "get_config", lambda: cfg)
     main_mod._enforce_production_secrets()  # no raise
 

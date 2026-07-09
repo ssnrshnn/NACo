@@ -8,10 +8,13 @@ configure a Postgres-friendly engine with a real connection pool.
 from __future__ import annotations
 
 import threading
+import uuid
+from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from naco.config import get_config
 
@@ -29,18 +32,59 @@ def _is_sqlite(url: str) -> bool:
     return url.startswith("sqlite")
 
 
+def _engine_kwargs(cfg) -> dict:
+    """Compute create_async_engine kwargs for *cfg* (no driver import needed).
+
+    Split out from :func:`_build_engine` so the pool-selection logic can be
+    unit-tested without a live database driver installed.
+    """
+    url = cfg.database.url
+    db = cfg.database
+
+    if _is_sqlite(url):
+        return {
+            "echo": cfg.server.debug,
+            "pool_pre_ping": True,
+            "connect_args": {"check_same_thread": False},
+        }
+
+    # PgBouncer (or any transaction-level pooler) in front of Postgres: let the
+    # proxy own the pool (NullPool) and disable asyncpg's prepared-statement
+    # cache with unique statement names — required for transaction pooling,
+    # where a client connection is not pinned to one backend.
+    if db.pgbouncer:
+        # asyncpg-specific knobs; harmless to omit for other drivers.
+        connect_args: dict = {}
+        if "asyncpg" in url:
+            connect_args = {
+                "prepared_statement_cache_size": 0,
+                "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
+            }
+        return {
+            "echo": cfg.server.debug,
+            "poolclass": NullPool,
+            "pool_pre_ping": db.pool_pre_ping,
+            "connect_args": connect_args,
+        }
+
+    # Direct-to-Postgres: a real client-side connection pool. Size it so that
+    # (replicas × (pool_size + max_overflow)) stays under `max_connections`.
+    return {
+        "echo": cfg.server.debug,
+        "pool_pre_ping": db.pool_pre_ping,
+        "pool_size": db.pool_size,
+        "max_overflow": db.max_overflow,
+        "pool_timeout": db.pool_timeout,
+        "pool_recycle": db.pool_recycle,
+    }
+
+
 def _build_engine():
     cfg = get_config()
     url = cfg.database.url
+    engine = create_async_engine(url, **_engine_kwargs(cfg))
 
     if _is_sqlite(url):
-        engine = create_async_engine(
-            url,
-            echo=cfg.server.debug,
-            pool_pre_ping=True,
-            connect_args={"check_same_thread": False},
-        )
-
         @event.listens_for(engine.sync_engine, "connect")
         def _set_sqlite_pragmas(dbapi_conn, _connection_record):
             cursor = dbapi_conn.cursor()
@@ -49,17 +93,7 @@ def _build_engine():
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
-        return engine
-
-    # PostgreSQL (or any non-SQLite backend): real pool, no SQLite-only kwargs.
-    return create_async_engine(
-        url,
-        echo=cfg.server.debug,
-        pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
-        pool_recycle=1800,
-    )
+    return engine
 
 
 def _get_engine():
@@ -108,7 +142,7 @@ engine = _EngineProxy()
 AsyncSessionLocal = _SessionProxy()
 
 
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency — yields an async session."""
     async with _get_session_factory()() as session:
         yield session

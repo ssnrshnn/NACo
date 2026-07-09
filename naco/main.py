@@ -10,7 +10,7 @@ import asyncio
 
 import uvicorn
 
-from naco.config import check_production_secrets, get_config
+from naco.config import check_production_secrets, check_weak_secrets, get_config
 from naco.core import get_logger, setup_logging
 
 log = get_logger(__name__)
@@ -24,6 +24,8 @@ def _enforce_production_secrets() -> None:
     real values — a placeholder in production means setup was skipped.
     """
     cfg = get_config()
+    for warning in check_weak_secrets(cfg):
+        log.warning("weak configuration: %s (change it, but not blocking startup)", warning)
     problems = check_production_secrets(cfg)
     if not problems:
         return

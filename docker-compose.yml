@@ -170,41 +170,47 @@ services:
 
   # ── Optional: observability (--profile obs) ──────────────────────────────
 
+  # `naco` runs with host networking, so its /metrics endpoint is only
+  # reachable on the host itself — bridged containers can't cross back to a
+  # host-networked port on many Linux hosts. Prometheus and Grafana therefore
+  # also run in the host namespace and bind to 127.0.0.1 only (never the
+  # network/internet); they reach NACo, each other, and Loki over loopback.
   prometheus:
     image: prom/prometheus:v2.54.0
     restart: unless-stopped
     profiles: ["obs"]
+    network_mode: host
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--web.console.libraries=/usr/share/prometheus/console_libraries"
       - "--web.console.templates=/usr/share/prometheus/consoles"
       - "--storage.tsdb.retention.time=30d"
-    ports:
-      - "9090:9090"
+      # Loopback-only listener: never exposed to the network/internet.
+      - "--web.listen-address=127.0.0.1:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    networks: [naco_net]
     logging: *default_logging
 
   grafana:
     image: grafana/grafana:11.2.0
     restart: unless-stopped
     profiles: ["obs"]
+    network_mode: host
     depends_on:
       prometheus: { condition: service_started }
       loki:       { condition: service_started }
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana}
       GF_USERS_ALLOW_SIGN_UP: "false"
-    ports:
-      - "3000:3000"
+      # Loopback-only listener on the default port 3000.
+      GF_SERVER_HTTP_ADDR: "127.0.0.1"
+      GF_SERVER_HTTP_PORT: "3000"
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
-    networks: [naco_net]
     logging: *default_logging
 
   loki:
@@ -212,6 +218,10 @@ services:
     restart: unless-stopped
     profiles: ["obs"]
     command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      # Loopback-only: lets the host-networked Grafana query Loki, while
+      # promtail still pushes over the bridge network.
+      - "127.0.0.1:3100:3100"
     volumes:
       - loki_data:/loki
     networks: [naco_net]

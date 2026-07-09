@@ -219,29 +219,47 @@ async def lifespan(_app: FastAPI):
     await init_db()
     await _seed_database()
 
-    if cfg.tacacs.enabled:
+    # ── Role-gated subsystems ────────────────────────────────────────────
+    # "all" (default) runs everything → identical to the classic single-node
+    # deployment. Splitting roles lets the stateless API scale independently
+    # of the host-networked RADIUS/TACACS auth planes.
+    roles = [r for r in ("api", "radius", "tacacs", "profiler", "workers")
+             if cfg.server.has_role(r)]
+    log.info("Active roles: %s", ", ".join(roles) or "(none)")
+
+    if cfg.tacacs.enabled and cfg.server.has_role("tacacs"):
         from naco.tacacs import run_tacacs_server
         _create_monitored_task(run_tacacs_server(), name="tacacs-server")
 
     global _radius_runner
-    if cfg.radius.enabled:
+    if cfg.radius.enabled and cfg.server.has_role("radius"):
         from naco.radius import run_radius_server_async
         _radius_runner = _create_monitored_task(run_radius_server_async(), name="radius-server")
 
-    if cfg.profiler.enabled:
+    if cfg.profiler.enabled and cfg.server.has_role("profiler"):
         from naco.profiler import profiler
         profiler.start(loop)
 
-    from naco.portal.app import expire_guest_sessions_loop
-    _create_monitored_task(expire_guest_sessions_loop(), name="guest-session-expiry")
-    _create_monitored_task(_log_retention_loop(),       name="log-retention")
-    _create_monitored_task(_stale_session_cleanup_loop(), name="stale-session-cleanup")
+    # Singleton maintenance loops — must run on exactly one replica set to
+    # avoid N× duplicate work, so they are gated behind the "workers" role.
+    if cfg.server.has_role("workers"):
+        from naco.portal.app import expire_guest_sessions_loop
+        _create_monitored_task(expire_guest_sessions_loop(), name="guest-session-expiry")
+        _create_monitored_task(_log_retention_loop(),       name="log-retention")
+        _create_monitored_task(_stale_session_cleanup_loop(), name="stale-session-cleanup")
 
-    from naco.core.webhooks import run_webhook_dispatcher
-    _create_monitored_task(run_webhook_dispatcher(), name="webhook-dispatcher")
+        from naco.core.webhooks import run_webhook_dispatcher
+        _create_monitored_task(run_webhook_dispatcher(), name="webhook-dispatcher")
 
+    # Per-process tasks — every replica needs its own metrics collector (counts
+    # events on its own bus) and policy-cache invalidation subscriber.
     from naco.core.metrics import run_metrics_collector
     _create_monitored_task(run_metrics_collector(bus), name="metrics-collector")
+
+    from naco.policy import run_policy_invalidation_subscriber
+    _create_monitored_task(
+        run_policy_invalidation_subscriber(), name="policy-invalidation-subscriber"
+    )
 
     await bus.publish(Event(EventType.SYSTEM_START, data={"node": cfg.server.name}))
 
