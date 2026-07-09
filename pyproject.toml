@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "naco"
-version = "2.2.0"
+version = "2.2.1"
 description = "NACo — a modern, container-native Network Access Control & AAA server"
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,6 +41,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "pip-audit>=2.7",
+    "hypothesis>=6.100",
 ]
 
 [tool.setuptools.packages.find]

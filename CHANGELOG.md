@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] — 2026-07-09
+
+### Fixed
+
+- **Cold-start deadlock creating the DB session factory.** The session
+  factory initialiser held the module init lock while creating the engine,
+  which re-acquired the same non-reentrant lock. Any process that touched
+  `AsyncSessionLocal` before `init_db()` — e.g. a `radius`-only role
+  replica — hung forever. The lock is now reentrant, with a regression test.
+- **CI gates now pass on a clean checkout** — the lint job installs
+  `types-PyYAML`, the profiler's dynamic `scapy.all` imports are annotated
+  for mypy, and the unit coverage floor is set below the measured baseline
+  (42%) so it gates regressions instead of failing every build.
+
 ## [2.2.0] — 2026-07-09
 
 ### Added
