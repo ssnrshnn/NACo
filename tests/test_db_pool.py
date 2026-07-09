@@ -99,3 +99,26 @@ def test_env_enables_pgbouncer(monkeypatch, tmp_path):
     finally:
         config_mod.get_config.cache_clear()
     assert cfg.database.pgbouncer is True
+
+
+def test_session_factory_creation_from_cold_start_does_not_deadlock(monkeypatch):
+    """Regression: creating the session factory before anything has created
+    the engine must not self-deadlock on the module init lock.
+
+    ``_get_session_factory`` holds the init lock while calling
+    ``_get_engine``, so the lock must be reentrant. Any process that touches
+    ``AsyncSessionLocal`` before ``init_db()`` (e.g. a radius-only role
+    replica) hits this path.
+    """
+    import threading
+
+    import naco.db.database as database
+
+    monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "_session_factory", None)
+
+    result: list = []
+    t = threading.Thread(target=lambda: result.append(database._get_session_factory()), daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert result, "cold-start _get_session_factory() deadlocked on _init_lock"

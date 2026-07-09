@@ -25,7 +25,9 @@ class Base(DeclarativeBase):
 
 _engine = None
 _session_factory = None
-_init_lock = threading.Lock()
+# Reentrant: _get_session_factory() holds this lock while calling
+# _get_engine(), which acquires it again on a cold start.
+_init_lock = threading.RLock()
 
 
 def _is_sqlite(url: str) -> bool:
