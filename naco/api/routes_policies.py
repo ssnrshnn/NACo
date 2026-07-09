@@ -10,6 +10,7 @@ from naco.api.auth import require_role
 from naco.api.schemas import PolicyCreate, PolicyOut, PolicyUpdate, StatusResponse
 from naco.db import get_db
 from naco.db.models import AdminRole, AdminUser, Policy
+from naco.policy import invalidate_policy_cache
 from naco.radius.coa_sync import schedule_policy_coa
 
 router = APIRouter(prefix="/api/v1", tags=["Policies"])
@@ -47,6 +48,7 @@ async def create_policy(
     await audit(db, admin, "CREATE", "policy", "", f"name={body.name}")
     await db.commit()
     await db.refresh(pol)
+    invalidate_policy_cache()
     # Sessions the new rule covers were authorised under the old rule set —
     # force them to re-authenticate (config: radius.coa_on_policy_change).
     if pol.enabled:
@@ -76,6 +78,7 @@ async def update_policy(
     if body.enabled     is not None: pol.enabled     = body.enabled
     await db.commit()
     await db.refresh(pol)
+    invalidate_policy_cache()
     schedule_policy_coa(old_conditions, pol.conditions)
     return PolicyOut.model_validate(pol)
 
@@ -94,6 +97,7 @@ async def delete_policy(
     was_enabled = pol.enabled
     await db.delete(pol)
     await db.commit()
+    invalidate_policy_cache()
     # Sessions authorised by the deleted rule must re-authenticate against
     # whatever remains (likely landing on default-deny).
     if was_enabled:

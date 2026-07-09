@@ -31,6 +31,21 @@ _TestSession = async_sessionmaker(
 )
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_policy_cache() -> AsyncGenerator[None, None]:
+    """Clear the process-level policy cache around every test.
+
+    The engine caches compiled policies in memory (invalidated by the API on
+    writes). Tests seed the ``policies`` table directly, bypassing that hook,
+    so we reset the cache before and after each test to keep them isolated.
+    """
+    from naco.policy.engine import invalidate_policy_cache
+
+    invalidate_policy_cache()
+    yield
+    invalidate_policy_cache()
+
+
 @pytest_asyncio.fixture
 async def db() -> AsyncGenerator[AsyncSession, None]:
     """Yield a DB session with fresh tables for every test."""

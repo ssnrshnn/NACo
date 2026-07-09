@@ -26,9 +26,11 @@ Example rule JSON
 """
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -178,6 +180,167 @@ def _compile_regex(pattern: str) -> re.Pattern:
 
 
 # ---------------------------------------------------------------------------
+# Compiled-policy cache
+# ---------------------------------------------------------------------------
+#
+# Every RADIUS / TACACS+ authentication used to issue a "SELECT * FROM policies
+# WHERE enabled ORDER BY priority" and re-parse each row's JSON conditions. At
+# a few thousand auth/s that is a lot of redundant round-trips and JSON work
+# for a table that changes rarely.
+#
+# The cache holds pre-parsed, priority-ordered snapshots in process memory.
+# It is refreshed either when a policy write calls
+# :func:`invalidate_policy_cache` (immediate, exact) or when the soft TTL
+# lapses (a safety net for out-of-band edits — direct SQL, a second process).
+# NACo runs as a single Uvicorn process, so the in-process cache is coherent
+# with the writers that live in the same process.
+
+_POLICY_CACHE_TTL = 30.0  # seconds — upper bound on staleness for out-of-band edits
+
+
+@dataclass(frozen=True)
+class _CompiledPolicy:
+    name: str
+    action: PolicyAction
+    vlan: int | None
+    conditions: list[dict]
+    reply_attributes: dict[str, Any]
+
+
+class _PolicyCache:
+    """Async-safe, TTL-bounded cache of compiled policies."""
+
+    def __init__(self, ttl: float = _POLICY_CACHE_TTL) -> None:
+        self._ttl = ttl
+        self._lock = asyncio.Lock()
+        self._compiled: list[_CompiledPolicy] | None = None
+        self._loaded_at = 0.0
+
+    def invalidate(self) -> None:
+        """Drop the cached snapshot so the next evaluate() reloads from DB."""
+        self._compiled = None
+
+    async def get(self, db: AsyncSession) -> list[_CompiledPolicy]:
+        cached = self._compiled
+        if cached is not None and (time.monotonic() - self._loaded_at) < self._ttl:
+            return cached
+        async with self._lock:
+            # Re-check under the lock: a concurrent caller may have just loaded.
+            cached = self._compiled
+            if cached is not None and (time.monotonic() - self._loaded_at) < self._ttl:
+                return cached
+            compiled = await self._load(db)
+            self._compiled = compiled
+            self._loaded_at = time.monotonic()
+            return compiled
+
+    async def _load(self, db: AsyncSession) -> list[_CompiledPolicy]:
+        stmt = (
+            select(Policy)
+            .where(Policy.enabled)
+            .order_by(Policy.priority.asc())
+        )
+        rows = list((await db.execute(stmt)).scalars().all())
+        compiled: list[_CompiledPolicy] = []
+        for policy in rows:
+            try:
+                raw = policy.conditions
+                if isinstance(raw, str):
+                    conditions: list[dict] = json.loads(raw or "[]")
+                else:
+                    conditions = raw if raw else []
+            except (json.JSONDecodeError, TypeError):
+                log.warning("Policy %r has invalid conditions JSON — skipping", policy.name)
+                continue
+            compiled.append(_CompiledPolicy(
+                name=policy.name,
+                action=PolicyAction(policy.action),
+                vlan=policy.vlan,
+                conditions=conditions,
+                reply_attributes=_parse_reply_attributes(policy),
+            ))
+        log.debug("Policy cache refreshed: %d active policies compiled", len(compiled))
+        return compiled
+
+
+_policy_cache = _PolicyCache()
+
+# Redis pub/sub channel used to broadcast "policies changed" across every
+# replica. In a single-process deployment the local invalidate() below is
+# enough; once NACo runs as multiple replicas, each one must drop its own
+# in-process snapshot when *any* replica writes a policy.
+_POLICY_INVALIDATION_CHANNEL = "naco:policy:invalidate"
+
+# Keep strong references to in-flight broadcast tasks so the event loop does
+# not garbage-collect them before they complete (see asyncio.create_task docs).
+_pending_broadcasts: set[asyncio.Task] = set()
+
+
+def invalidate_policy_cache() -> None:
+    """Public hook: call after any create/update/delete of a policy so the
+    next authentication sees the change immediately (config changes already
+    propagate via CoA; this keeps the decision path itself in sync).
+
+    Invalidates this process's snapshot immediately and — best-effort —
+    broadcasts to other replicas via Redis pub/sub. Redis being unreachable is
+    non-fatal: the per-snapshot TTL still bounds staleness everywhere.
+    """
+    _policy_cache.invalidate()
+    _broadcast_invalidation_best_effort()
+
+
+def _broadcast_invalidation_best_effort() -> None:
+    """Schedule a fire-and-forget Redis publish if an event loop is running.
+
+    Callers are async route handlers, so a loop is normally present; in sync
+    contexts (CLI, tests) there is nothing to broadcast to and the local
+    invalidation above already did the job."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_publish_invalidation())
+    _pending_broadcasts.add(task)
+    task.add_done_callback(_pending_broadcasts.discard)
+
+
+async def _publish_invalidation() -> None:
+    try:
+        from naco.core.cache import get_redis
+        redis = await get_redis()
+        if redis is not None:
+            await redis.publish(_POLICY_INVALIDATION_CHANNEL, "1")
+    except Exception as exc:  # pragma: no cover - best effort
+        log.debug("Policy-cache invalidation broadcast failed: %s", exc)
+
+
+async def run_policy_invalidation_subscriber() -> None:
+    """Long-lived task: drop the local policy snapshot whenever any replica
+    publishes a change. Degrades gracefully when Redis is unavailable."""
+    from naco.core.cache import get_redis
+
+    while True:
+        try:
+            redis = await get_redis()
+            if redis is None:
+                await asyncio.sleep(30)
+                continue
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(_POLICY_INVALIDATION_CHANNEL)
+            log.info("Subscribed to %s for cross-replica policy invalidation",
+                     _POLICY_INVALIDATION_CHANNEL)
+            async for message in pubsub.listen():
+                if message.get("type") == "message":
+                    _policy_cache.invalidate()
+                    log.debug("Policy cache invalidated via Redis pub/sub")
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log.warning("Policy-invalidation subscriber error: %s — retrying in 5s", exc)
+            await asyncio.sleep(5)
+
+
+# ---------------------------------------------------------------------------
 # Policy Engine
 # ---------------------------------------------------------------------------
 
@@ -191,40 +354,22 @@ class PolicyEngine:
         self, ctx: AuthContext, db: AsyncSession
     ) -> PolicyDecision:
         """
-        Load active policies ordered by priority, evaluate each until a match.
+        Evaluate cached, priority-ordered policies until one matches.
         Returns a DENY decision if no rule matches (default-deny).
         """
-        stmt = (
-            select(Policy)
-            .where(Policy.enabled)
-            .order_by(Policy.priority.asc())
-        )
-        result = await db.execute(stmt)
-        policies: list[Policy] = result.scalars().all()
-
-        for policy in policies:
-            try:
-                raw = policy.conditions
-                if isinstance(raw, str):
-                    conditions: list[dict] = json.loads(raw or "[]")
-                else:
-                    conditions = raw if raw else []
-            except (json.JSONDecodeError, TypeError):
-                log.warning("Policy %r has invalid conditions JSON — skipping", policy.name)
-                continue
-
-            if _matches_all(conditions, ctx):
+        for policy in await _policy_cache.get(db):
+            if _matches_all(policy.conditions, ctx):
                 log.debug(
                     "Policy match: [%s] → %s (vlan=%s) for user=%r mac=%r",
                     policy.name, policy.action, policy.vlan,
                     ctx.username, ctx.mac_address,
                 )
                 return PolicyDecision(
-                    action=PolicyAction(policy.action),
+                    action=policy.action,
                     vlan=policy.vlan,
                     policy_name=policy.name,
                     reason=f"Matched policy: {policy.name}",
-                    reply_attributes=_parse_reply_attributes(policy),
+                    reply_attributes=policy.reply_attributes,
                 )
 
         # No rule matched → default deny
