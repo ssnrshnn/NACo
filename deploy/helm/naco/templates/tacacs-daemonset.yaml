@@ -1,0 +1,88 @@
+{{- if .Values.tacacs.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "naco.fullname" . }}-tacacs
+  labels:
+    {{- include "naco.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tacacs
+spec:
+  selector:
+    matchLabels:
+      {{- include "naco.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tacacs
+  template:
+    metadata:
+      labels:
+        {{- include "naco.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: tacacs
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.secrets.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "naco.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: tacacs
+          image: {{ include "naco.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: NACO_ROLES
+              value: "tacacs"
+            - name: NACO_PORT
+              value: {{ .Values.tacacs.httpPort | quote }}
+            {{- include "naco.commonEnv" . | nindent 12 }}
+            {{- range $k, $v := .Values.tacacs.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - name: tacacs
+              containerPort: {{ .Values.config.tacacs.port }}
+              hostPort: {{ .Values.config.tacacs.port }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.tacacs.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.tacacs.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "naco.configVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "naco.configVolume" . | nindent 8 }}
+      {{- with .Values.tacacs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tacacs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tacacs.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

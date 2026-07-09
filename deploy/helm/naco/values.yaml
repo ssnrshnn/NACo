@@ -1,0 +1,272 @@
+# Default values for the NACo Helm chart.
+# See deploy/helm/naco/README.md for the full guide.
+
+# -- Container image shared by every role.
+image:
+  repository: ghcr.io/ssnrshnn/naco
+  # Defaults to .Chart.appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# External datastores.
+#
+# This chart does NOT bundle Postgres or Redis — enterprise deployments should
+# point NACo at a managed/HA database and cache. Provide the connection URLs
+# via the Secret below (or an existing Secret). Redis is required for global
+# rate-limiting and cross-replica policy-cache invalidation when running >1
+# API replica.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Secrets.
+#
+# Either let the chart create a Secret from `secrets.values` (fine for a quick
+# start / GitOps with sealed-secrets), or point at an existing Secret that you
+# manage out-of-band (recommended for production). The existing Secret must
+# contain the same keys listed under `secrets.values`.
+# ---------------------------------------------------------------------------
+secrets:
+  # If set, the chart references this Secret instead of creating one.
+  existingSecret: ""
+  # Only used when existingSecret is empty. NEVER commit real values here —
+  # override via --set-file / --set / a sealed secret / an external secret op.
+  values:
+    NACO_DB_URL: "postgresql+asyncpg://naco:CHANGE_ME@postgres:5432/naco"
+    NACO_REDIS_URL: "redis://redis:6379/0"
+    NACO_SESSION_SECRET: "CHANGE_ME_session_secret"
+    NACO_API_SECRET: "CHANGE_ME_api_secret"
+    NACO_CSRF_SECRET: "CHANGE_ME_csrf_secret"
+    NACO_ADMIN_PASSWORD: "CHANGE_ME_admin_password"
+    # Optional: encrypts NAS secrets / TACACS keys / TOTP seeds at rest.
+    NACO_MASTER_KEY: ""
+    # Optional: set to enable the FreeRADIUS EAP callback endpoints.
+    NACO_EAP_BEARER_TOKEN: ""
+
+# ---------------------------------------------------------------------------
+# NACo application config (rendered into a ConfigMap as /etc/naco/config.yaml).
+# Override any subtree here. Secrets are injected via env, not this file.
+# ---------------------------------------------------------------------------
+config:
+  server:
+    name: "NACo"
+    host: "0.0.0.0"
+    port: 8080
+    debug: false
+    log_level: "INFO"
+    # `roles` is set per-workload by the chart — do not set it here.
+  # The DB/Redis URLs come from the Secret (NACO_DB_URL / NACO_REDIS_URL).
+  # These are per-replica pool knobs — keep (api replicas × (pool_size +
+  # max_overflow)) under Postgres max_connections, or set pgbouncer: true and
+  # point NACO_DB_URL at a PgBouncer transaction-pooling endpoint.
+  database:
+    pool_size: 10
+    max_overflow: 20
+    pool_timeout: 30
+    pool_recycle: 1800
+    pgbouncer: false
+  radius:
+    enabled: true
+    host: "0.0.0.0"
+    auth_port: 1812
+    acct_port: 1813
+    coa_port: 3799
+  tacacs:
+    enabled: false
+    host: "0.0.0.0"
+    port: 49
+  profiler:
+    enabled: false
+  portal:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# API role — stateless HTTP (UI / REST / captive portal / EAP hooks / metrics).
+# Safe to run N replicas behind a Service + Ingress.
+# ---------------------------------------------------------------------------
+api:
+  enabled: true
+  replicaCount: 3
+  # Extra NACO_* env passed to every API pod.
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Spread replicas across nodes for HA by default.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: api
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: naco.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: ""
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# Workers role — singleton maintenance loops (guest expiry, log retention,
+# stale-session cleanup, webhook dispatch). MUST stay at a single replica to
+# avoid N× duplicate work.
+# ---------------------------------------------------------------------------
+workers:
+  enabled: true
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# RADIUS role — DaemonSet with hostNetwork so NAS devices reach it on the node
+# IP and NACo sees the real client source address. UDP 1812/1813/3799.
+# ---------------------------------------------------------------------------
+radius:
+  enabled: true
+  # Every role still serves HTTP (health/metrics). Because these DaemonSets use
+  # hostNetwork, each host-networked role needs a DISTINCT host port so they
+  # don't collide when scheduled on the same node.
+  httpPort: 8080
+  # Restrict to nodes labelled for RADIUS; empty = all nodes.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# TACACS+ role — DaemonSet with hostNetwork, TCP/49. Disabled by default.
+# ---------------------------------------------------------------------------
+tacacs:
+  enabled: false
+  # Distinct host HTTP port (see radius.httpPort).
+  httpPort: 8081
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Profiler role — DaemonSet, hostNetwork + NET_RAW to sniff DHCP/ARP.
+# Disabled by default (privileged capability).
+# ---------------------------------------------------------------------------
+profiler:
+  enabled: false
+  # Distinct host HTTP port (see radius.httpPort).
+  httpPort: 8082
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Prometheus Operator ServiceMonitor for the API /metrics endpoint.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Database migrations.
+#
+# Runs `nacoctl db-upgrade` (alembic upgrade head) as a Helm pre-install /
+# pre-upgrade hook Job, so the schema is migrated once before any new pod
+# starts — the safe pattern for multi-replica rollouts. If your NACO_DB_URL
+# points at PgBouncer transaction pooling, set migrations.extraEnv to a direct
+# Postgres URL for DDL (it will override the Secret value for this Job only).
+# ---------------------------------------------------------------------------
+migrations:
+  enabled: true
+  backoffLimit: 3
+  # Extra/override env for the migration Job only (e.g. a direct DB URL).
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  podAnnotations: {}
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pod-level security context applied to every role.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context for the non-privileged roles (api/workers).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

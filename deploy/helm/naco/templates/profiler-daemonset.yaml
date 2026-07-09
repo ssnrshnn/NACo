@@ -1,0 +1,92 @@
+{{- if .Values.profiler.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "naco.fullname" . }}-profiler
+  labels:
+    {{- include "naco.labels" . | nindent 4 }}
+    app.kubernetes.io/component: profiler
+spec:
+  selector:
+    matchLabels:
+      {{- include "naco.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: profiler
+  template:
+    metadata:
+      labels:
+        {{- include "naco.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: profiler
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.secrets.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "naco.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # hostNetwork required to sniff DHCP/ARP on the node's interfaces.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: profiler
+          image: {{ include "naco.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              # NET_RAW: Scapy opens AF_PACKET sockets to sniff DHCP/ARP.
+              add:
+                - NET_RAW
+          env:
+            - name: NACO_ROLES
+              value: "profiler"
+            - name: NACO_PORT
+              value: {{ .Values.profiler.httpPort | quote }}
+            {{- include "naco.commonEnv" . | nindent 12 }}
+            {{- range $k, $v := .Values.profiler.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.profiler.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.profiler.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "naco.configVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "naco.configVolume" . | nindent 8 }}
+      {{- with .Values.profiler.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.profiler.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.profiler.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

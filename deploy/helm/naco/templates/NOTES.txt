@@ -1,0 +1,26 @@
+NACo {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Roles enabled:
+  api      : {{ .Values.api.enabled }}{{ if .Values.api.enabled }} (replicas: {{ if .Values.api.autoscaling.enabled }}{{ .Values.api.autoscaling.minReplicas }}–{{ .Values.api.autoscaling.maxReplicas }} via HPA{{ else }}{{ .Values.api.replicaCount }}{{ end }}){{ end }}
+  workers  : {{ .Values.workers.enabled }} (singleton)
+  radius   : {{ .Values.radius.enabled }}{{ if .Values.radius.enabled }} (DaemonSet, hostNetwork){{ end }}
+  tacacs   : {{ .Values.tacacs.enabled }}{{ if .Values.tacacs.enabled }} (DaemonSet, hostNetwork){{ end }}
+  profiler : {{ .Values.profiler.enabled }}{{ if .Values.profiler.enabled }} (DaemonSet, hostNetwork + NET_RAW){{ end }}
+
+{{- if not .Values.secrets.existingSecret }}
+
+⚠  You are using chart-managed secrets. For production, set
+   `secrets.existingSecret` to a Secret you manage out-of-band and remove the
+   placeholder values from values.yaml.
+{{- end }}
+
+Reach the Admin UI / REST API:
+{{- if .Values.api.ingress.enabled }}
+  https://{{ (index .Values.api.ingress.hosts 0).host }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "naco.fullname" . }}-api {{ .Values.api.service.port }}:{{ .Values.api.service.port }}
+  then open http://127.0.0.1:{{ .Values.api.service.port }}/
+{{- end }}
+
+Point your NAS / switches / APs at any node running the RADIUS DaemonSet
+(UDP {{ .Values.config.radius.auth_port }}/{{ .Values.config.radius.acct_port }}, CoA {{ .Values.config.radius.coa_port }}).
