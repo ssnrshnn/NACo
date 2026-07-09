@@ -61,6 +61,7 @@ from naco.api.auth import (
     verify_password_async,
 )
 from naco.config import get_config
+from naco.core.logger import get_logger
 from naco.db import get_db
 from naco.db.models import (
     ActiveSession,
@@ -79,6 +80,8 @@ from naco.db.models import (
     User,
     VlanMapping,
 )
+
+log = get_logger(__name__)
 
 app = FastAPI(title="NACo Admin", docs_url=None, redoc_url=None)
 
@@ -582,7 +585,79 @@ async def _forbidden_handler(request: Request, exc: Forbidden):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = ""):
-    return templates.TemplateResponse(request, "login.html", {"request": request, "error": error})
+    oidc_cfg = get_config().oidc
+    return templates.TemplateResponse(request, "login.html", {
+        "request": request, "error": error,
+        "oidc_enabled": oidc_cfg.enabled,
+        "local_login": (not oidc_cfg.enabled) or oidc_cfg.local_login,
+    })
+
+
+# ---------------------------------------------------------------------------
+# OIDC single sign-on
+# ---------------------------------------------------------------------------
+
+def _oidc_redirect_uri(request: Request) -> str:
+    scheme = "https" if (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto") == "https"
+    ) else request.url.scheme
+    host = request.headers.get("host", request.url.netloc)
+    return f"{scheme}://{host}/login/oidc/callback"
+
+
+@app.get("/login/oidc")
+async def oidc_start(request: Request):
+    from naco.web import oidc as oidc_mod
+    cfg = get_config()
+    if not cfg.oidc.enabled:
+        return RedirectResponse(url="/login", status_code=302)
+    try:
+        doc = await oidc_mod.discover(cfg.oidc.issuer)
+    except Exception as exc:
+        log.error("OIDC discovery failed for %s: %s", cfg.oidc.issuer, exc)
+        return RedirectResponse(url="/login?error=SSO+provider+unreachable", status_code=302)
+    state = oidc_mod.make_state(cfg.server.session_secret)
+    return RedirectResponse(
+        url=oidc_mod.build_auth_url(cfg.oidc, doc, _oidc_redirect_uri(request), state),
+        status_code=302,
+    )
+
+
+@app.get("/login/oidc/callback")
+async def oidc_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    from naco.web import oidc as oidc_mod
+    cfg = get_config()
+    if not cfg.oidc.enabled:
+        return RedirectResponse(url="/login", status_code=302)
+    if error or not code:
+        return RedirectResponse(url="/login?error=SSO+login+failed", status_code=302)
+    if not oidc_mod.check_state(cfg.server.session_secret, state):
+        log.warning("OIDC callback with invalid/expired state")
+        return RedirectResponse(url="/login?error=SSO+state+invalid", status_code=302)
+
+    user = await oidc_mod.authenticate_code(db, cfg.oidc, code, _oidc_redirect_uri(request))
+    if user is None:
+        return RedirectResponse(url="/login?error=SSO+access+denied", status_code=302)
+
+    user.last_login = datetime.now(UTC)
+    await db.commit()
+
+    resp = RedirectResponse(url="/", status_code=303)
+    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    resp.set_cookie(
+        _SESSION_COOKIE, _sign_session(user.username),
+        httponly=True, samesite="lax",
+        secure=is_https,
+        max_age=_SESSION_MAX_AGE,
+    )
+    return resp
 
 
 @app.post("/login")

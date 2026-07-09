@@ -63,7 +63,12 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except ValueError:
+        # Not a bcrypt hash — e.g. the "!oidc!…" unusable marker on
+        # SSO-provisioned admins. Local login must simply fail, not 500.
+        return False
 
 
 async def verify_password_async(plain: str, hashed: str) -> bool:

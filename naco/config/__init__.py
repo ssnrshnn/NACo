@@ -216,6 +216,31 @@ class EapConfig(BaseModel):
     bearer_token: str = ""
 
 
+class OidcConfig(BaseModel):
+    """OIDC single sign-on for the admin UI (Keycloak / Authentik / Okta …).
+
+    Standard authorization-code flow. NACo discovers endpoints from
+    ``issuer``/.well-known/openid-configuration and verifies ID tokens
+    against the provider's JWKS. Local username/password login stays
+    available as a fallback unless ``local_login`` is false.
+    """
+    enabled: bool = False
+    issuer: str = ""                # e.g. https://keycloak.example.com/realms/acme
+    client_id: str = ""
+    client_secret: str = ""
+    scopes: list[str] = ["openid", "profile", "email"]
+    # Claim carrying the username for the NACo admin account.
+    username_claim: str = "preferred_username"
+    # Claim (string or list) inspected for role mapping.
+    role_claim: str = "groups"
+    # Map of claim value → NACo role (SUPERUSER / OPERATOR / VIEWER).
+    role_map: dict[str, str] = {}
+    # Role granted when nothing in role_map matches. Empty string = deny.
+    default_role: str = ""
+    # Keep the local login form usable alongside SSO.
+    local_login: bool = True
+
+
 class OtelConfig(BaseModel):
     """OpenTelemetry tracing (optional — needs the `naco[otel]` extra).
 
@@ -239,6 +264,7 @@ class AppConfig(BaseModel):
     profiler: ProfilerConfig = Field(default_factory=ProfilerConfig)
     eap: EapConfig = Field(default_factory=EapConfig)
     otel: OtelConfig = Field(default_factory=OtelConfig)
+    oidc: OidcConfig = Field(default_factory=OidcConfig)
     log_forwarding: LogForwardingConfig = Field(default_factory=LogForwardingConfig)
     ldap: LdapConfig = Field(default_factory=LdapConfig)
     event_webhooks: list[EventWebhookTarget] = []

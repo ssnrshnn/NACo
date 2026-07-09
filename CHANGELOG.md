@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Profiler write coalescing** — DHCP/ARP observations are merged per MAC
   in memory and flushed as one transaction every 5 s, instead of one
   SELECT + UPSERT round-trip per sniffed packet.
+- **OIDC admin SSO (Keycloak / Authentik / Okta / any RFC-compliant
+  provider)** — `oidc.*` config enables "Sign in with SSO" on the admin
+  login page: standard authorization-code flow, endpoints discovered from
+  the issuer, ID tokens verified against the provider's JWKS (PyJWT — no
+  new dependencies), HMAC-signed TTL-bound state. Admins auto-provision
+  with a role mapped from a configurable claim (`role_claim`/`role_map`,
+  highest match wins; `default_role` or deny). SSO accounts get an
+  unusable password hash so they can never log in locally; locally
+  disabled admins are refused re-entry via SSO. Local login stays
+  available unless `oidc.local_login: false`.
 - **RadSec — RADIUS over TLS (RFC 6614)** — the FreeRADIUS sidecar now
   listens on 2083/tcp with mandatory mutual TLS (client certificates from
   the quickstart-generated CA), feeding decrypted requests through the

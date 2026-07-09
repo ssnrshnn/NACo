@@ -45,6 +45,16 @@
     <div class="alert alert-danger py-2 small">{{ error }}</div>
     {% endif %}
 
+    {% if oidc_enabled %}
+    <a href="/login/oidc" class="btn btn-outline-info w-100 fw-semibold mb-3">
+      Sign in with SSO
+    </a>
+    {% if local_login %}
+    <div class="text-center text-muted small mb-3">— or —</div>
+    {% endif %}
+    {% endif %}
+
+    {% if local_login is not defined or local_login %}
     <form method="post" action="/login">
       <div class="mb-3">
         <label class="form-label small text-muted">Username</label>
@@ -66,6 +76,7 @@
         </a>
       </div>
     </form>
+    {% endif %}
 
     <p class="text-center text-muted mt-3" style="font-size:.75rem">
       Network Access Control · NACo v2
