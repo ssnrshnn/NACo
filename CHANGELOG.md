@@ -5,9 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] — 2026-07-09
 
 ### Added
+
+- **Role-based process split for horizontal scale & HA** — a new
+  `server.roles` setting (env `NACO_ROLES`, e.g. `api,radius`) selects which
+  subsystems a process runs. `all` (the default) is unchanged all-in-one
+  behaviour. Roles: `api` (stateless HTTP UI/REST/portal/EAP hooks), `radius`,
+  `tacacs`, `profiler`, and `workers` (singleton maintenance loops — guest
+  expiry, log retention, stale-session cleanup, webhook dispatch). The HTTP
+  server, metrics collector, and policy-cache invalidation subscriber run on
+  every replica. This lets the stateless API scale independently of the
+  host-networked auth planes.
+
+- **Helm chart (`deploy/helm/naco`)** — deploys NACo as horizontally-scalable
+  roles: a stateless `api` Deployment (Service, Ingress, HPA, PodDisruptionBudget,
+  topology spread), a single-replica `workers` Deployment, and host-networked
+  `radius`/`tacacs`/`profiler` DaemonSets (distinct HTTP ports so they can
+  co-schedule). Ships a shared ConfigMap (feature flags derived from the enabled
+  workloads), chart-managed or external Secret, a `pre-install`/`pre-upgrade`
+  Alembic migration hook Job (`nacoctl db-upgrade`), optional Prometheus-Operator
+  ServiceMonitor, non-root/read-only-rootfs security contexts, and a README.
+
+- **Tunable DB connection pool + PgBouncer support** — `database.pool_size`,
+  `max_overflow`, `pool_timeout`, `pool_recycle`, and `pool_pre_ping` are now
+  configurable (env: `NACO_DB_POOL_SIZE`, `NACO_DB_MAX_OVERFLOW`,
+  `NACO_DB_POOL_TIMEOUT`, `NACO_DB_POOL_RECYCLE`) so per-replica pools can be
+  sized to stay under Postgres `max_connections`. Setting `database.pgbouncer:
+  true` (env `NACO_DB_PGBOUNCER`) switches the engine to `NullPool` and disables
+  asyncpg's prepared-statement cache with unique statement names, as required
+  for PgBouncer transaction-pooling mode.
+
+- **Policy decision caching** — the policy engine now serves authentication
+  decisions from an in-process, priority-ordered cache of pre-parsed policies
+  instead of issuing a `SELECT` and re-parsing every rule's JSON on every
+  RADIUS/TACACS+ request. The cache is invalidated immediately when a policy
+  is created, updated, or deleted (via the API), with a 30 s TTL safety net
+  for out-of-band edits. Removes the per-auth DB round-trip and JSON parse on
+  the hot path.
+
+- **Supply-chain CI gates** — the pipeline now builds the container image and
+  scans it with Trivy (fails on fixable HIGH/CRITICAL, results uploaded to the
+  GitHub Security tab), emits a CycloneDX SBOM artifact, and runs `pip-audit`
+  as a gating step. Unit tests now enforce a coverage floor and also run on
+  Python 3.13.
 
 - **CoA on policy change** — creating, editing, or deleting a policy now
   sends RFC 5176 Disconnect-Requests to the NASes of the active sessions
@@ -88,8 +130,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nacoctl restore --age-identity <keyfile>` decrypts transparently.
   The `age` binary ships in the container image.
 
+### Changed
+
+- **JWT library migrated from `python-jose` to `PyJWT`.** `python-jose` is
+  effectively unmaintained and has a history of algorithm-confusion/DoS
+  advisories; NACo's HS256 admin-session and API tokens now sign and verify
+  with the actively maintained `PyJWT`. Token format is unchanged — existing
+  sessions and API JWTs keep working across the upgrade.
+- **Type checking (`mypy`) is now a gating CI step** instead of advisory.
+  Roughly 40 latent type issues were resolved along the way (see Fixed). Ruff
+  and mypy are pinned in CI so the gate is reproducible.
+- **Dependency version bounds** — `requirements.txt` now carries upper bounds
+  to stop unattended major upgrades of framework/protocol libraries, while
+  leaving security-critical libraries (`cryptography`, `pillow`) free to take
+  patch releases.
+
 ### Fixed
 
+- **GELF log forwarder crashed on exceptions** — `GELFHandler.emit` called
+  `self.formatException(...)`, but `logging.Handler` has no such method
+  (it lives on `Formatter`); logging any record with `exc_info` to a Graylog
+  target raised `AttributeError`. Now formats via `logging.Formatter`.
+- **Settings save hardening** — text fields in the settings form that arrive
+  as an unexpected file part (or absent) could raise instead of being
+  sanitised; form-value coercion now collapses non-string values safely.
+- **RADIUS sync bridge** — `_run_sync` now raises a clear error if invoked
+  before the server's event loop is bound, instead of passing `None` to
+  `run_coroutine_threadsafe`.
 - `nacoctl backup` was broken against the default compose stack: the
   image shipped bookworm's `pg_dump` 15, which aborts on the
   `postgres:16` service ("server version mismatch"). The image now
@@ -461,6 +528,7 @@ only supported migration.
 - Session-token / API-token escalation — closed by splitting the
   signing secrets.
 
-[Unreleased]: https://github.com/ssnrshnn/naco/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/ssnrshnn/naco/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/ssnrshnn/naco/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/ssnrshnn/naco/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/ssnrshnn/naco/releases/tag/v2.0.0
