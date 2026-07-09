@@ -225,7 +225,9 @@ class DeviceProfiler:
 
     def _process_packet(self, pkt) -> None:
         try:
-            from scapy.all import ARP, DHCP
+            # scapy.all builds its namespace dynamically — no stubs exist,
+            # so mypy (with scapy installed) flags every name on it.
+            from scapy.all import ARP, DHCP  # type: ignore[attr-defined]
             if pkt.haslayer(DHCP):
                 self._process_dhcp(pkt)
             elif pkt.haslayer(ARP):
@@ -234,7 +236,7 @@ class DeviceProfiler:
             log.debug("Profiler packet error: %s", exc)
 
     def _process_dhcp(self, pkt) -> None:
-        from scapy.all import BOOTP, DHCP, Ether
+        from scapy.all import BOOTP, DHCP, Ether  # type: ignore[attr-defined]
         mac        = pkt[Ether].src
         options    = {opt[0]: opt[1] for opt in pkt[DHCP].options if isinstance(opt, tuple)}
 
@@ -255,7 +257,7 @@ class DeviceProfiler:
             )
 
     def _process_arp(self, pkt) -> None:
-        from scapy.all import ARP
+        from scapy.all import ARP  # type: ignore[attr-defined]
         mac = pkt[ARP].hwsrc
         ip  = pkt[ARP].psrc
         if self._loop:
