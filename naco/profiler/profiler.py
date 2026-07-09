@@ -141,12 +141,20 @@ class DeviceProfiler:
     Runs in a separate thread (Scapy is not async-native).
     """
 
+    #: Seconds between buffered-observation flushes to the database.
+    FLUSH_INTERVAL = 5.0
+
     def __init__(self) -> None:
         cfg = get_config()
         self._iface    = cfg.profiler.listen_interface
         self._oui      = OuiDatabase(cfg.profiler.oui_db)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running  = False
+        # Observations merged per MAC between flushes. Written from the
+        # sniffer thread, drained on the event loop — guarded by a lock.
+        import threading
+        self._pending: dict[str, dict[str, str]] = {}
+        self._pending_lock = threading.Lock()
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -154,6 +162,7 @@ class DeviceProfiler:
         import threading
         t = threading.Thread(target=self._sniff_loop, daemon=True, name="profiler-sniffer")
         t.start()
+        asyncio.run_coroutine_threadsafe(self._flush_loop(), loop)
         log.info("Device profiler started on interface %s", self._iface)
 
     def _resolve_iface(self) -> str:
@@ -250,80 +259,115 @@ class DeviceProfiler:
 
         ip_offered = str(pkt[BOOTP].yiaddr) if pkt.haslayer("BOOTP") else ""
 
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._upsert_device(mac, hostname, ip_offered, vendor_cls, dhcp_fp),
-                self._loop,
-            )
+        self._queue_observation(mac, hostname=hostname, ip=ip_offered,
+                                vendor_cls=vendor_cls, dhcp_fp=dhcp_fp)
 
     def _process_arp(self, pkt) -> None:
         from scapy.all import ARP  # type: ignore[attr-defined]
         mac = pkt[ARP].hwsrc
         ip  = pkt[ARP].psrc
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._upsert_device(mac, "", ip, "", ""),
-                self._loop,
-            )
+        self._queue_observation(mac, hostname="", ip=ip, vendor_cls="", dhcp_fp="")
 
-    async def _upsert_device(
+    def _queue_observation(
         self,
         mac_raw: str,
+        *,
         hostname: str,
         ip: str,
         vendor_cls: str,
         dhcp_fp: str,
     ) -> None:
+        """Merge one packet's facts into the pending buffer (sniffer thread).
+
+        A chatty device produces many packets between flushes; only the
+        latest non-empty value of each field is kept, and the DB sees one
+        write per device per flush interval instead of one per packet.
+        """
         try:
             mac = normalise_mac(mac_raw)
         except ValueError:
             return
+        with self._pending_lock:
+            obs = self._pending.setdefault(
+                mac, {"hostname": "", "ip": "", "vendor_cls": "", "dhcp_fp": ""}
+            )
+            if hostname:   obs["hostname"]   = hostname
+            if ip:         obs["ip"]         = ip
+            if vendor_cls: obs["vendor_cls"] = vendor_cls
+            if dhcp_fp:    obs["dhcp_fp"]    = dhcp_fp
 
-        vendor                 = self._oui.lookup(mac)
-        device_type, os_type   = infer_device_type(vendor + " " + vendor_cls, hostname, dhcp_fp)
+    async def _flush_loop(self) -> None:
+        while self._running:
+            await asyncio.sleep(self.FLUSH_INTERVAL)
+            try:
+                await self._flush_once()
+            except Exception as exc:
+                log.warning("Profiler flush failed: %s", exc)
 
+    async def _flush_once(self) -> None:
+        """Write all buffered observations in a single transaction."""
+        with self._pending_lock:
+            batch, self._pending = self._pending, {}
+        if not batch:
+            return
+
+        from sqlalchemy import select
         from sqlalchemy.exc import IntegrityError
+
+        events: list[Event] = []
         async with AsyncSessionLocal() as db:
-            from sqlalchemy import select
-            stmt = select(Device).where(Device.mac_address == mac)
-            dev  = (await db.execute(stmt)).scalar_one_or_none()
+            existing = {
+                d.mac_address: d
+                for d in (await db.execute(
+                    select(Device).where(Device.mac_address.in_(batch))
+                )).scalars()
+            }
+            for mac, obs in batch.items():
+                vendor = self._oui.lookup(mac)
+                device_type, os_type = infer_device_type(
+                    vendor + " " + obs["vendor_cls"], obs["hostname"], obs["dhcp_fp"]
+                )
+                dev = existing.get(mac)
+                is_new = dev is None
+                if dev is None:
+                    dev = Device(mac_address=mac)
+                    db.add(dev)
 
-            is_new = dev is None
-            if is_new:
-                dev = Device(mac_address=mac)
-                db.add(dev)
+                if obs["hostname"]: dev.hostname         = obs["hostname"]
+                if obs["ip"]:       dev.ip_address       = obs["ip"]
+                if vendor:          dev.vendor           = vendor
+                if device_type:     dev.device_type      = device_type
+                if os_type:         dev.os_type          = os_type
+                if obs["dhcp_fp"]:  dev.dhcp_fingerprint = obs["dhcp_fp"]
 
-            if hostname:        dev.hostname          = hostname
-            if ip:              dev.ip_address        = ip
-            if vendor:          dev.vendor            = vendor
-            if device_type:     dev.device_type       = device_type
-            if os_type:         dev.os_type           = os_type
-            if dhcp_fp:         dev.dhcp_fingerprint  = dhcp_fp
-
+                events.append(Event(
+                    EventType.NEW_DEVICE if is_new else EventType.DEVICE_UPDATED,
+                    data={
+                        "mac": mac, "hostname": obs["hostname"], "ip": obs["ip"],
+                        "vendor": vendor, "device_type": device_type,
+                    },
+                ))
+                if is_new:
+                    log.info("New device: mac=%s vendor=%s type=%s host=%s",
+                             mac, vendor, device_type, obs["hostname"])
             try:
                 await db.commit()
             except IntegrityError:
-                # Race condition: another coroutine inserted the same MAC
+                # Another replica inserted one of the MACs between our read
+                # and commit. Re-queue the whole batch; the next flush reads
+                # the fresh rows and applies these as updates.
                 await db.rollback()
-                # Retry as update only
-                dev = (await db.execute(stmt)).scalar_one_or_none()
-                if dev:
-                    if hostname:    dev.hostname         = hostname
-                    if ip:          dev.ip_address       = ip
-                    if vendor:      dev.vendor           = vendor
-                    if device_type: dev.device_type      = device_type
-                    if os_type:     dev.os_type          = os_type
-                    if dhcp_fp:     dev.dhcp_fingerprint = dhcp_fp
-                    await db.commit()
-                is_new = False
+                with self._pending_lock:
+                    for mac, obs in batch.items():
+                        merged = self._pending.setdefault(mac, obs)
+                        if merged is not obs:
+                            for key, value in obs.items():
+                                if value and not merged[key]:
+                                    merged[key] = value
+                return
 
-        etype = EventType.NEW_DEVICE if is_new else EventType.DEVICE_UPDATED
-        bus.publish_sync(Event(etype, data={
-            "mac": mac, "hostname": hostname, "ip": ip,
-            "vendor": vendor, "device_type": device_type,
-        }))
-        if is_new:
-            log.info("New device: mac=%s vendor=%s type=%s host=%s", mac, vendor, device_type, hostname)
+        for event in events:
+            bus.publish_sync(event)
 
 
 # Module-level singleton
