@@ -1,48 +1,255 @@
 {
   "annotations": { "list": [] },
   "editable": true,
-  "graphTooltip": 0,
+  "graphTooltip": 1,
   "id": null,
   "title": "NACo Overview",
   "tags": ["naco", "radius", "tacacs", "nac"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
   "panels": [
     {
       "type": "stat",
-      "title": "RADIUS Access-Accepts (/min)",
+      "title": "Active sessions",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "area", "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
       "targets": [
-        { "expr": "rate(naco_radius_accept_total[1m]) * 60", "legendFormat": "accepts" }
-      ],
-      "fieldConfig": { "defaults": { "unit": "short" } }
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "naco_active_sessions",
+          "legendFormat": "sessions"
+        }
+      ]
     },
     {
       "type": "stat",
-      "title": "RADIUS Access-Rejects (/min)",
+      "title": "Auth success rate (5m)",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
       "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "green", "value": 90 }
+            ]
+          }
+        }
+      },
       "targets": [
-        { "expr": "rate(naco_radius_reject_total[1m]) * 60", "legendFormat": "rejects" }
-      ],
-      "fieldConfig": { "defaults": { "unit": "short" } }
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "100 * sum(rate(naco_auth_total{result=\"success\"}[5m])) / clamp_min(sum(rate(naco_auth_total[5m])), 0.0001)",
+          "legendFormat": "success %"
+        }
+      ]
     },
     {
-      "type": "timeseries",
-      "title": "Auth events by result",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "type": "stat",
+      "title": "New devices (24h)",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "area", "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "purple" }
+        }
+      },
       "targets": [
-        { "expr": "sum by (result) (rate(naco_auth_events_total[5m]))", "legendFormat": "{{result}}" }
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "increase(naco_new_devices_total[24h])",
+          "legendFormat": "new devices"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Uptime",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "fixed", "fixedColor": "green" }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "naco_uptime_seconds",
+          "legendFormat": "uptime"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Active sessions",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "title": "Authentication rate by result (per min)",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": { "mode": "none" } },
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "success" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+          { "matcher": { "id": "byName", "options": "failure" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "max"] }, "tooltip": { "mode": "multi" } },
       "targets": [
-        { "expr": "naco_active_sessions", "legendFormat": "sessions" }
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "sum by (result) (rate(naco_auth_total[$__rate_interval])) * 60",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RADIUS requests by type (per min)",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 },
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "sum by (type) (rate(naco_radius_requests_total[$__rate_interval])) * 60",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "TACACS+ requests by type (per min)",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 },
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "sum by (type) (rate(naco_tacacs_requests_total[$__rate_interval])) * 60",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Active sessions over time",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2 },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "naco_active_sessions",
+          "legendFormat": "sessions"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Blocked (disabled entity) attempts by type (per min)",
+      "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1, "stacking": { "mode": "normal" } },
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "naco-prometheus" },
+          "expr": "sum by (entity) (rate(naco_disabled_blocked_total[$__rate_interval])) * 60",
+          "legendFormat": "{{entity}}"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "NACo logs (live)",
+      "datasource": { "type": "loki", "uid": "naco-loki" },
+      "gridPos": { "x": 0, "y": 28, "w": 24, "h": 10 },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "naco-loki" },
+          "expr": "{service=\"naco\"}"
+        }
       ]
     }
   ]

@@ -9,8 +9,10 @@ scrape_configs:
     metrics_path: /api/v1/metrics
     scheme: http
     static_configs:
+      # Prometheus shares the host network namespace with NACo, so the
+      # metrics endpoint is reachable on loopback.
       - targets:
-          - "host.docker.internal:8080"
+          - "127.0.0.1:8080"
         labels:
           app: naco
 

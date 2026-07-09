@@ -136,11 +136,30 @@ def _render_gauge(name: str, help_text: str, gauge: _Gauge) -> str:
     ])
 
 
+def _render_build_info() -> str:
+    """Identity gauge (value always 1) carrying version + node name as labels.
+
+    With multiple replicas, Prometheus scrapes each independently; this lets
+    dashboards group/join by node and track the running version per replica
+    without polluting the operational metrics with a node label.
+    """
+    from naco import __version__
+    from naco.config import get_config
+
+    node = get_config().server.name.replace('"', "")
+    return "\n".join([
+        "# HELP naco_build_info NACo build/runtime identity (value is always 1)",
+        "# TYPE naco_build_info gauge",
+        f'naco_build_info{{version="{__version__}",node="{node}"}} 1',
+    ])
+
+
 def render_metrics() -> str:
     """Return all metrics in Prometheus text exposition format."""
     uptime_gauge.set(time.monotonic() - _start_time)
 
     sections = [
+        _render_build_info(),
         _render_counter(
             "naco_auth_total",
             "Total authentication attempts",
