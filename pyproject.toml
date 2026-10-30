@@ -99,7 +99,8 @@ select = ["E", "F", "I", "B", "UP", "S", "C4", "RUF", "SIM"]
 # S101: asserts are fine in tests and for type narrowing.
 # S104: binding 0.0.0.0 is intentional inside the container.
 # S324: MD5 is mandated by the RADIUS/TACACS+ wire formats, never used for passwords.
-ignore = ["E501", "S101", "S104", "S324"]
+# B008: Depends() in argument defaults is FastAPI's dependency-injection idiom.
+ignore = ["E501", "S101", "S104", "S324", "B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "B"]
