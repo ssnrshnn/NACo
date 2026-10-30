@@ -1,0 +1,16 @@
+.git
+.env
+*.db
+*.db-*
+**/__pycache__
+**/.pytest_cache
+.ruff_cache
+.mypy_cache
+secrets/
+backups/
+deploy/freeradius/certs/
+tests/e2e/.certs/
+docs/
+* 2
+**/* 2
+**/* 2.*

@@ -1,0 +1,58 @@
+# Inside EAP-TTLS (PAP) and PEAP (GTC): check the inner credentials with
+# NACo and hand the identity NACo verified to the outer decision. Inner EAP
+# uses the GTC-only "inner-eap" instance (see mods-enabled/eap).
+server inner-tunnel {
+	authorize {
+		# copy_request_to_tunnel copies the NAS's attributes, not ours.
+		update request {
+			&NACo-NAS-IP := &outer.request:NACo-NAS-IP
+		}
+		if (&outer.request:EAP-Type && &outer.request:EAP-Type == PEAP) {
+			update request {
+				&NACo-Auth-Method := "PEAP"
+			}
+		}
+		else {
+			update request {
+				&NACo-Auth-Method := "EAP-TTLS"
+			}
+		}
+
+		if (&EAP-Message) {
+			inner-eap {
+				ok = return
+				updated = return
+			}
+		}
+		elsif (&User-Password) {
+			update control {
+				&Auth-Type := naco
+			}
+		}
+		else {
+			reject
+		}
+	}
+
+	authenticate {
+		Auth-Type naco {
+			naco_token
+			naco
+			# Only the name whose password NACo has just accepted becomes
+			# the session's identity — never one from an inner accept that
+			# NACo did not decide.
+			if (ok) {
+				update outer.session-state {
+					&NACo-Inner-Identity := &User-Name
+				}
+			}
+		}
+		inner-eap
+	}
+
+	post-auth {
+		Post-Auth-Type REJECT {
+			attr_filter.access_reject
+		}
+	}
+}

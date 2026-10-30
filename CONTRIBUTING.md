@@ -1,114 +1,77 @@
-# Contributing to NACo
+# Contributing
 
-Thanks for your interest in NACo. This project handles authentication
-for production networks, so we hold patches to a higher bar than most
-hobby code. Please read this whole document before opening a PR.
+Thank you for helping. NACo values a small, readable code base over many
+features: before a large change, open an issue to talk about it.
 
-## Code of conduct
-
-Be kind. Be precise. Engage with the actual diff, not with the contributor.
-
-## Getting set up
+## Set up
 
 ```bash
-git clone https://github.com/ssnrshnn/naco.git
-cd naco
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python3.12 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.lock && pip install -e '.[dev]'
+NACO_DEV=1 naco                  # http://127.0.0.1:8080 with development secrets
 ```
 
-For full-stack development including Postgres, Redis, and Caddy:
+`NACO_DEV=1` replaces missing secrets with fixed development values; never
+use it in production. The first administrator's password is printed in the
+log (or set `NACO_ADMIN_PASSWORD`).
+
+## Checks
+
+Everything CI runs, locally:
 
 ```bash
-docker compose -f docker-compose.yml \
-               -f deploy/docker-compose.dev.yml up
+ruff check .
+mypy naco
+pytest                           # unit and API tests (seconds)
+pytest -m e2e tests/e2e          # FreeRADIUS + RADIUS/EAP clients in Docker (minutes)
+pytest -m ui tests/ui            # the panel in Chromium: playwright install chromium
+shellcheck quickstart.sh scripts/*.sh
 ```
 
-The dev compose file mounts the working tree, runs `uvicorn --reload`,
-and rebuilds on every file change.
+Every API route is covered by `tests/api/test_access_matrix.py`: a new route
+must be added to its role table, and state-changing routes must write to the
+audit log.
 
-## Test matrix
+## Conventions
 
-NACo ships **three** test tiers; PRs must pass tier 1 + 2. CI runs all
-three.
+- Python 3.12 with type hints; `ruff check .` and `mypy naco` must pass.
+- Comments explain *why*; keep them short. Match the surrounding code.
+- The panel is plain ES modules and CSS — no build step, no third-party
+  scripts, nothing inline (the Content-Security-Policy forbids it).
+- One concern per commit, message in the imperative
+  (`fix(portal): …`, `feat(tacacs): …`, `docs: …`).
 
-| Tier | Command                                              | When                |
-| ---- | ---------------------------------------------------- | ------------------- |
-| 1. Unit         | `pytest -m "not integration"`              | Every PR             |
-| 2. Lint         | `ruff check naco tests` + `mypy naco`      | Every PR             |
-| 3. Integration  | `pytest -m integration tests/integration`  | CI only — needs `freeradius-utils`, Postgres, Redis |
+## Database changes
 
-New features must add unit tests in `tests/test_*.py`. Anything that
-touches the on-wire protocols (RADIUS, TACACS+, EAP-REST) must add an
-integration test under `tests/integration/`.
-
-## Commit hygiene
-
-- One logical change per commit.
-- Subject ≤ 72 chars, imperative mood: `Fix VLAN parser for hex strings`.
-- Body wrapped at 72 chars. Explain *why*, not *what*.
-- Reference the issue: `Refs #123` / `Fixes #123`.
-
-Squash before merging — we prefer a linear history.
-
-## Code style
-
-- Format: `ruff format naco tests` (configured in `pyproject.toml`).
-- Lint: `ruff check naco tests`.
-- Types: `mypy naco` — warnings allowed, errors not.
-- Async-first: avoid mixing blocking I/O into async paths; if you must,
-  wrap with `loop.run_in_executor`.
-- No `print()` — use the loggers in `naco.core.logger`.
-
-### Conventions
-
-- Module docstrings are required and should describe **purpose**, not
-  list contents.
-- Pydantic for any external input. SQLAlchemy ORM for database. No
-  hand-rolled SQL except in migrations.
-- One FastAPI app per file is fine; the consolidated app is built in
-  [`naco/app.py`](naco/app.py) — keep its surface small.
-- Background tasks created in the lifespan must use
-  `_create_monitored_task` so exceptions are surfaced.
-
-## Database migrations
-
-When you touch `naco/db/models.py`:
+Change `naco/db/models.py`, then generate a migration:
 
 ```bash
-alembic revision --autogenerate -m "add column X to users"
+alembic upgrade head                                   # a scratch dev.db at today's schema
+alembic revision --autogenerate -m "describe the change"
 ```
 
-Review the generated file — autogeneration misses constraints and
-server-side defaults. Migrations must be reversible.
+Review it (SQLite needs batch operations; `render_as_batch` is on) and keep
+`tests/test_migrations.py` green — it fails when models and migrations drift.
 
-We have **one** baseline migration (`0001_initial.py`). All future
-migrations are incremental; do **not** flatten history.
+## Dependencies
 
-## Security disclosures
+Runtime dependencies are pinned with hashes in `requirements.lock`:
 
-If you discover a vulnerability, follow [`SECURITY.md`](SECURITY.md)
-instead of opening a public issue.
+```bash
+uv pip compile pyproject.toml --universal --python-version 3.12 --generate-hashes -o requirements.lock
+```
 
-## Release process
+Add a dependency only when the standard library or an existing one cannot
+do the job. FreeRADIUS' attribute names for policy validation come from its
+image: after changing `deploy/freeradius/Dockerfile`, run
+`python3 scripts/update-radius-dictionary.py`.
 
-NACo follows [SemVer](https://semver.org):
+## Releases
 
-- **Major** — breaking config / schema / CLI changes.
-- **Minor** — new features, fully backwards-compatible config / schema.
-- **Patch** — bug fixes and security patches only.
+Bump `naco/__init__.py`, add a `## X.Y.Z — date` section to `CHANGELOG.md`,
+merge, then tag `vX.Y.Z`. The release workflow runs CI again and publishes
+signed images and the GitHub release.
 
-Release flow:
+## Security
 
-1. Open a release PR bumping `pyproject.toml`, `naco/__init__.py`, and
-   `CHANGELOG.md`.
-2. Once merged, tag: `git tag -s v2.x.y -m "NACo v2.x.y"` and push.
-3. CI builds the multi-arch container image and publishes to GHCR.
-4. Sign the release notes with the project GPG key.
-
-## Where to ask
-
-- **Bugs / feature requests** — GitHub issues.
-- **Security** — `security@example.invalid` (replace with your fork's
-  alias).
-- **Architectural questions** — open a discussion before writing code.
+Report vulnerabilities privately — see [SECURITY.md](SECURITY.md).

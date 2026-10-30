@@ -1,274 +1,157 @@
-"""
-NACo LDAP / Active Directory authentication helper.
-======================================================
-Verifies user credentials with a bind against an LDAP/AD directory and
-resolves group membership for auto-provisioning.
+"""LDAP / Active Directory: search-then-bind authentication and group lookup.
 
-Enterprise directory features:
-
-* **Failover pool** — ``ldap.servers`` lists multiple domain controllers;
-  they are tried in order and the first reachable one serves the request.
-* **Nested groups** — ``ldap.nested_groups`` resolves transitive
-  membership via the AD matching rule ``LDAP_MATCHING_RULE_IN_CHAIN``
-  (plain ``memberOf`` only lists direct groups).
-* **StartTLS / LDAPS** — ``ldap.start_tls`` upgrades a plain connection
-  before any bind; ``ldaps://`` URIs / ``use_ssl`` do implicit TLS.
-
-Usage::
-
-    from naco.auth.ldap import ldap_authenticate
-
-    result = await ldap_authenticate("alice", "s3cret")
-    if result is not None:
-        # result = {"dn": "...", "groups": ["admins"], "email": "alice@..."}
+* Encrypted transport only (``ldaps://`` or StartTLS) with certificate
+  verification, unless ``allow_insecure`` is set explicitly.
+* Several servers form a failover pool, tried in order.
+* The user search must match exactly one entry; the filter value is
+  RFC 4515-escaped. Empty passwords never reach a bind (an empty simple bind
+  is an *unauthenticated* bind that many servers accept).
+* ``LdapError`` means "the directory could not answer" — callers fail closed —
+  while ``None`` means "these credentials are not valid".
 """
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import logging
+import ssl
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
-from naco.config import get_config
-from naco.core.logger import get_logger
+from ldap3 import AUTO_BIND_NONE, FIRST, NONE, SUBTREE, Connection, Server, ServerPool, Tls
+from ldap3.core.exceptions import LDAPException
+from ldap3.utils.conv import escape_filter_chars
 
-log = get_logger(__name__)
+from naco.config import LdapConfig
 
-#: OID of Microsoft's transitive-membership matching rule.
-_IN_CHAIN_RULE = "1.2.840.113556.1.4.1941"
+log = logging.getLogger(__name__)
 
+IN_CHAIN_RULE = "1.2.840.113556.1.4.1941"  # AD transitive membership
 
-# ---------------------------------------------------------------------------
-# Pure helpers (unit-tested without a directory)
-# ---------------------------------------------------------------------------
-
-def server_uris(cfg) -> list[str]:
-    """The failover pool: ``servers`` when set, else the legacy ``server``."""
-    pool = [s.strip() for s in cfg.servers if s and s.strip()]
-    if pool:
-        return pool
-    return [cfg.server] if cfg.server else []
+Connect = Callable[[str | None, str | None], Connection]
 
 
-def nested_group_filter(user_dn: str) -> str:
-    """AD filter matching every group *user_dn* belongs to, transitively."""
-    # Escape RFC 4515 special characters in the DN before embedding it.
-    escaped = (
-        user_dn.replace("\\", "\\5c")
-        .replace("*", "\\2a")
-        .replace("(", "\\28")
-        .replace(")", "\\29")
-        .replace("\x00", "\\00")
-    )
-    return f"(member:{_IN_CHAIN_RULE}:={escaped})"
+class LdapError(RuntimeError):
+    """The directory is unreachable or misconfigured."""
 
 
-def map_groups(cfg, group_dns: list[str]) -> list[str]:
-    """Map directory group DNs to NACo group names.
+@dataclass(frozen=True)
+class LdapUser:
+    dn: str
+    email: str
+    full_name: str
+    group_dns: tuple[str, ...]
 
-    Case-insensitive on the DN (DNs are), ordered by ``group_map`` so the
-    map expresses provisioning priority.
-    """
+
+def _first(attrs: dict[str, list[Any]], name: str) -> str:
+    for key, values in attrs.items():
+        if key.lower() == name.lower() and values:
+            return str(values[0])
+    return ""
+
+
+def _all(attrs: dict[str, list[Any]], name: str) -> list[str]:
+    for key, values in attrs.items():
+        if key.lower() == name.lower():
+            return [str(v) for v in values]
+    return []
+
+
+def map_group(cfg: LdapConfig, group_dns: tuple[str, ...] | list[str]) -> str | None:
+    """First configured mapping the user belongs to (DNs compare case-insensitively)."""
     present = {dn.lower() for dn in group_dns}
-    return [
-        naco_group
-        for dn, naco_group in cfg.group_map.items()
-        if dn.lower() in present
-    ]
+    for mapping in cfg.group_map:
+        if mapping.ldap_group.lower() in present:
+            return mapping.group
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Directory operations
-# ---------------------------------------------------------------------------
+class LdapDirectory:
+    def __init__(self, cfg: LdapConfig, bind_password: str, connect: Connect | None = None) -> None:
+        self.cfg = cfg
+        self._bind_password = bind_password
+        self._connect = connect or self._default_connect
 
-async def ldap_authenticate(username: str, password: str) -> dict[str, Any] | None:
-    """
-    Authenticate *username* / *password* against the configured directory.
+    # -- transport --------------------------------------------------------
 
-    Returns a dict with user attributes on success, or ``None`` on failure.
-    The dict contains:
-      - ``dn``:     the user's distinguished name
-      - ``groups``: list of NACo group names (resolved via ``group_map``)
-      - ``email``:  user's mail attribute (if present)
-    """
+    def _server_pool(self) -> ServerPool:
+        servers = []
+        for uri in self.cfg.servers:
+            host = urlsplit(uri).hostname or ""
+            # ldap3 verifies the chain *and* the hostname after the handshake.
+            tls = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=self.cfg.ca_file or None, sni=host)
+            servers.append(Server(uri, use_ssl=uri.lower().startswith("ldaps://"), tls=tls, get_info=NONE,
+                                  connect_timeout=self.cfg.timeout_seconds))
+        return ServerPool(servers, FIRST, active=True, exhaust=60)
+
+    def _default_connect(self, user: str | None, password: str | None) -> Connection:
+        conn = Connection(
+            self._server_pool(), user=user, password=password, auto_bind=AUTO_BIND_NONE,
+            receive_timeout=self.cfg.timeout_seconds, read_only=True, raise_exceptions=False,
+        )
+        conn.open()
+        if self.cfg.start_tls and not conn.start_tls():
+            conn.unbind()
+            raise LdapError("StartTLS negotiation failed")
+        return conn
+
+    # -- operations -------------------------------------------------------
+
+    def _find_user(self, conn: Connection, username: str) -> tuple[str, dict[str, list[Any]]] | None:
+        query = self.cfg.user_filter.replace("{username}", escape_filter_chars(username))
+        conn.search(
+            self.cfg.base_dn, query, SUBTREE, size_limit=2,
+            attributes=[self.cfg.group_attribute, "mail", "displayName", "cn"],
+        )
+        entries = conn.entries
+        if len(entries) != 1:
+            if len(entries) > 1:
+                log.warning("LDAP: filter %s matched more than one entry — refusing", query)
+            return None
+        return str(entries[0].entry_dn), entries[0].entry_attributes_as_dict
+
+    def _groups(self, conn: Connection, dn: str, attrs: dict[str, list[Any]]) -> list[str]:
+        if self.cfg.nested_groups:
+            conn.search(self.cfg.base_dn, f"(member:{IN_CHAIN_RULE}:={escape_filter_chars(dn)})",
+                        SUBTREE, attributes=[])
+            return [str(e.entry_dn) for e in conn.entries]
+        return _all(attrs, self.cfg.group_attribute)
+
+    def authenticate(self, username: str, password: str) -> LdapUser | None:
+        if not username or not password:
+            return None
+        try:
+            service = self._connect(self.cfg.bind_dn or None, self._bind_password or None)
+            try:
+                if not service.bind():
+                    raise LdapError("service account bind failed — check ldap.bind_dn and NACO_LDAP_BIND_PASSWORD")
+                found = self._find_user(service, username)
+                if found is None:
+                    return None
+                dn, attrs = found
+                groups = self._groups(service, dn, attrs)
+            finally:
+                service.unbind()
+
+            user_conn = self._connect(dn, password)
+            try:
+                if not user_conn.bind():
+                    return None
+            finally:
+                user_conn.unbind()
+        except LDAPException as exc:
+            raise LdapError(f"directory error: {exc}") from exc
+
+        full_name = _first(attrs, "displayName") or _first(attrs, "cn")
+        return LdapUser(dn=dn, email=_first(attrs, "mail"), full_name=full_name, group_dns=tuple(groups))
+
+
+async def ldap_authenticate(username: str, password: str) -> LdapUser | None:
+    from naco.config import get_config, get_secrets
+
     cfg = get_config().ldap
     if not cfg.enabled:
         return None
-
-    if importlib.util.find_spec("ldap3") is None:
-        log.warning("ldap3 package not installed — LDAP auth unavailable (pip install ldap3)")
-        return None
-
-    # Run the blocking LDAP operations in a thread to avoid blocking asyncio
-    return await asyncio.to_thread(_ldap_auth_sync, cfg, username, password)
-
-
-def _make_server_pool(cfg):
-    """Build an ldap3 ServerPool trying the configured URIs in order."""
-    import ldap3
-    from ldap3 import FIRST, Server, ServerPool
-
-    servers = []
-    for uri in server_uris(cfg):
-        # cfg.port applies only when the URI does not carry its own port
-        # (ldaps:// URIs default to 636 inside ldap3 when port is None).
-        host_part = uri.split("://", 1)[-1]
-        explicit_port = ":" in host_part
-        is_ldaps = uri.startswith("ldaps://")
-        servers.append(Server(
-            uri,
-            port=None if (explicit_port or is_ldaps) else cfg.port,
-            use_ssl=cfg.use_ssl or is_ldaps,
-            get_info=ldap3.NONE,
-            connect_timeout=cfg.connect_timeout,
-        ))
-    if not servers:
-        raise ValueError("ldap.enabled is true but no servers are configured")
-    # FIRST + active: always prefer the first server, skip dead ones, retry
-    # them on later requests.
-    return ServerPool(servers, FIRST, active=1, exhaust=False)
-
-
-def _connect(cfg, pool, user: str | None, password: str | None):
-    """Open (and optionally StartTLS-upgrade) a bound connection."""
-    from ldap3 import Connection
-
-    conn = Connection(
-        pool, user=user, password=password,
-        auto_bind=False, receive_timeout=cfg.connect_timeout * 2,
-    )
-    conn.open()
-    if cfg.start_tls and not cfg.use_ssl:
-        conn.start_tls()
-    if not conn.bind():
-        conn.unbind()
-        return None
-    return conn
-
-
-def _resolve_nested_groups(cfg, conn, user_dn: str) -> list[str]:
-    """All groups (direct + transitive) containing *user_dn* — AD only."""
-    from ldap3 import SUBTREE
-
-    conn.search(
-        search_base=cfg.base_dn,
-        search_filter=nested_group_filter(user_dn),
-        search_scope=SUBTREE,
-        attributes=["distinguishedName"],
-    )
-    return [str(entry.entry_dn) for entry in conn.entries]
-
-
-def _ldap_auth_sync(cfg, username: str, password: str) -> dict[str, Any] | None:
-    import ldap3
-    from ldap3 import ALL_ATTRIBUTES, SUBTREE
-
-    try:
-        pool = _make_server_pool(cfg)
-
-        # 1. Bind with service account to search for the user
-        conn = _connect(cfg, pool, cfg.bind_dn, cfg.bind_password)
-        if conn is None:
-            log.warning("LDAP service-account bind failed (check bind_dn/bind_password)")
-            return None
-
-        search_filter = cfg.user_filter.replace(
-            "{username}", ldap3.utils.conv.escape_filter_chars(username)
-        )
-        conn.search(
-            search_base=cfg.base_dn,
-            search_filter=search_filter,
-            search_scope=SUBTREE,
-            attributes=ALL_ATTRIBUTES,
-        )
-
-        if not conn.entries:
-            log.debug("LDAP: user %r not found with filter %s", username, search_filter)
-            conn.unbind()
-            return None
-
-        user_entry = conn.entries[0]
-        user_dn = str(user_entry.entry_dn)
-
-        # 2. Resolve group membership (while the service connection is open)
-        group_dns: list[str] = []
-        if cfg.nested_groups:
-            group_dns = _resolve_nested_groups(cfg, conn, user_dn)
-        elif cfg.group_attribute:
-            member_of = getattr(user_entry, cfg.group_attribute, None)
-            if member_of:
-                group_dns = [str(dn) for dn in member_of.values]
-        conn.unbind()
-
-        # 3. Bind as the user to verify the password
-        user_conn = _connect(cfg, pool, user_dn, password)
-        if user_conn is None:
-            log.debug("LDAP bind failed for user %r — wrong password", username)
-            return None
-        user_conn.unbind()
-
-        groups = map_groups(cfg, group_dns) if cfg.group_map else []
-
-        # 4. Extract email
-        email = ""
-        if hasattr(user_entry, "mail"):
-            vals = user_entry.mail.values
-            email = str(vals[0]) if vals else ""
-
-        log.info("LDAP auth success: user=%r dn=%r groups=%r", username, user_dn, groups)
-        return {"dn": user_dn, "groups": groups, "email": email}
-
-    except ldap3.core.exceptions.LDAPBindError:
-        log.debug("LDAP bind failed for user %r — wrong password", username)
-        return None
-    except ldap3.core.exceptions.LDAPException as exc:
-        log.warning("LDAP error for user %r: %s", username, exc)
-        return None
-    except Exception as exc:
-        log.warning("LDAP unexpected error for %r: %s", username, exc)
-        return None
-
-
-async def ldap_auto_provision(
-    username: str, ldap_result: dict[str, Any], db
-) -> None:
-    """
-    Create or update a local User record based on LDAP auth result.
-    Maps the first matching LDAP group to a NACo group — and since policy
-    conditions match on that group's name, directory membership drives the
-    policy engine directly.
-    """
-    import secrets
-
-    from sqlalchemy import select
-
-    from naco.api.auth import hash_password
-    from naco.db.models import Group, User
-
-    user = (await db.execute(
-        select(User).where(User.username == username)
-    )).scalar_one_or_none()
-
-    # Resolve group_id from LDAP groups
-    group_id = None
-    for gname in ldap_result.get("groups", []):
-        g = (await db.execute(select(Group).where(Group.name == gname))).scalar_one_or_none()
-        if g:
-            group_id = g.id
-            break
-
-    if user is None:
-        # Auto-provision: create local user with random password (LDAP will always auth)
-        user = User(
-            username=username,
-            password_hash=hash_password(secrets.token_urlsafe(32)),
-            email=ldap_result.get("email", ""),
-            group_id=group_id,
-            enabled=True,
-        )
-        db.add(user)
-        log.info("Auto-provisioned LDAP user %r into group_id=%s", username, group_id)
-    else:
-        # Update group mapping if changed
-        if group_id and user.group_id != group_id:
-            user.group_id = group_id
-    await db.commit()
+    directory = LdapDirectory(cfg, get_secrets().ldap_bind_password)
+    return await asyncio.to_thread(directory.authenticate, username, password)

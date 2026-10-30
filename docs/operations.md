@@ -1,72 +1,141 @@
-# Day-two operations
+# Operations
 
-**Policy changes propagate immediately.** When a policy is created,
-edited, or deleted, NACo finds the active sessions the rule applies to and
-sends their NASes RFC 5176 Disconnect-Requests, so clients re-authenticate
-under the new rules instead of keeping stale access until the next
-re-auth. On by default; turn off with `radius.coa_on_policy_change: false`.
+All commands run in the NACo directory on the host.
 
-**Bulk disconnect** any slice of the session table:
+## Everyday
 
 ```bash
-curl -X POST https://<naco>/api/v1/sessions/disconnect \
-     -H "Authorization: Bearer $TOKEN" \
-     -d '{"username": "alice"}'          # or mac_address / nas_ip / "all": true
-# → Disconnect sent to 2 session(s): 2 acked, 0 failed, 0 skipped
+docker compose ps                      # are all three containers up and healthy?
+docker compose logs -f naco            # decisions, TACACS+, audit, errors
+docker compose logs -f freeradius      # RADIUS/EAP protocol problems
+docker compose restart naco            # after editing config/config.yaml
 ```
 
-**CSV import/export** for users, devices, and NAS clients:
+The panel's **System** page shows versions, uptime, database size, when
+FreeRADIUS last asked NACo something, and the active settings. **Logs** and
+**Audit** hold every decision and every administrator action.
+
+## nacoctl
+
+`nacoctl` runs inside the NACo container:
 
 ```bash
-# Inventory snapshots (exports never contain password hashes or secrets)
-curl -H "Authorization: Bearer $TOKEN" https://<naco>/api/v1/users/export.csv
-curl -H "Authorization: Bearer $TOKEN" https://<naco>/api/v1/devices/export.csv
-curl -H "Authorization: Bearer $TOKEN" https://<naco>/api/v1/nas/export.csv
-
-# Bulk onboarding — create-only: existing rows are skipped, never overwritten
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-     -F "file=@users.csv" https://<naco>/api/v1/users/import
-# → {"created": 40, "skipped": 2, "errors": ["line 7: …"]}
+docker compose exec naco nacoctl --help
 ```
 
-Import columns: users `username,password,email,full_name,group,enabled`
-(`group` is a group *name* that must exist) · devices
-`mac_address,hostname,device_type,notes,authorized` · NAS
-`name,ip_address,secret,description,enabled` (`secret` required, ≥ 16
-chars). Every row is validated by the same Pydantic models as the JSON
-API.
+| Command | |
+|---|---|
+| `check-config` | validate `config.yaml` and the secrets |
+| `reset-password <admin>` | new temporary password for an administrator (printed once) |
+| `reset-totp <admin>` | remove an administrator's two-factor setup (lost phone) |
+| `backup [-o FILE\|-]` | online backup of the database |
+| `restore FILE\|- --yes` | replace the database with a backup |
+| `rotate-master-key --new-key-file FILE\|-` | re-encrypt stored secrets with a new master key |
 
-**API tokens** give automation (CI, monitoring, scripts) long-lived
-credentials without sharing an admin login. Each token carries a role
-ceiling (`VIEWER` / `OPERATOR` / `SUPERUSER`) enforced by the same RBAC
-as admin accounts; only a SHA-256 digest is stored, and the raw value is
-shown once, at creation. Tokens cannot mint or revoke other tokens.
+`-` means standard output or input, so files move between the host and the
+container without ownership problems. Changes made by `nacoctl` are recorded
+in the audit log; secrets are never passed as arguments, where they would
+show in the process list.
+
+## Backups
 
 ```bash
-curl -X POST https://<naco>/api/v1/tokens \
-     -H "Authorization: Bearer $ADMIN_JWT" \
-     -d '{"name": "ci-deploy", "role": "OPERATOR", "expires_days": 90}'
-# → {"token": "naco_…", …}    ← store it; it is never shown again
-
-curl https://<naco>/api/v1/users -H "Authorization: Bearer naco_…"
+docker compose exec naco nacoctl backup
+# → /backups/naco-20261030-020000.db in the naco_backups volume
 ```
 
-**Synthetic AAA probes** exercise the full protocol path (socket →
-parsing → policy engine → reply) — what a NAS actually experiences,
-beyond what `/health/*` can see:
+The backup is consistent while NACo runs. It holds password hashes and
+encrypted secrets, so treat it as confidential. Straight to a file on the
+host — encrypted on the way for an [age](https://age-encryption.org) key
+whose private half stays elsewhere (`apt install age` on the host):
 
 ```bash
-docker compose exec naco nacoctl test-radius            # PAP Access-Request
-docker compose exec naco nacoctl test-tacacs            # TACACS+ PAP login
-# RADIUS probe: Access-Reject in 4.2 ms
+docker compose exec -T naco nacoctl backup -o - | age -r age1q… > naco-$(date +%F).db.age
 ```
 
-With the default `--expect any`, a Reject is healthy — it proves the
-server parsed the request and evaluated policy. Use
-`--expect accept --username u --password p` to also validate a real
-credential. Exit codes are monitoring-friendly: `0` expectation met,
-`1` server answered with the other outcome, `2` no response. The probe's
-source IP must be a registered NAS (the in-container `127.0.0.1` works
-out of the box once a localhost NAS exists).
+Nightly, keeping two weeks (crontab of a user in the `docker` group; `%` must
+be escaped in crontab):
 
----
+```cron
+0 2 * * *  cd /opt/NACo && docker compose exec -T naco nacoctl backup -o - | age -r age1q… > /var/backups/naco/naco-$(date +\%F).db.age && find /var/backups/naco -name 'naco-*.db.age' -mtime +14 -delete
+```
+
+Copy backups off the host as well.
+A restore also needs **`.env`** (the master key) and, for EAP, **`secrets/ca/`**
+and **`deploy/freeradius/certs/`** — back those up once, separately and
+securely.
+
+## Restore
+
+```bash
+docker compose stop naco
+docker compose run --rm -T naco nacoctl restore - --yes < naco-2026-10-30.db
+docker compose start naco
+```
+
+An encrypted backup is decrypted on the way in:
+`age -d -i key.txt naco-2026-10-30.db.age | docker compose run --rm -T naco nacoctl restore - --yes`.
+A backup still in the volume is restored by name:
+`docker compose run --rm naco nacoctl restore /backups/naco-20261030-020000.db --yes`.
+The restored database is checked for integrity and migrated to the running
+version. On a new host, restore `.env`, `secrets/` and
+`deploy/freeradius/certs/` first, then run `./quickstart.sh`, then restore.
+
+## Rotating the master key
+
+```bash
+docker compose exec naco nacoctl backup
+openssl rand -base64 32 > new.key && chmod 600 new.key
+docker compose stop naco
+docker compose run --rm -T naco nacoctl rotate-master-key --new-key-file - < new.key
+# put the new key into NACO_MASTER_KEY in .env, then:
+docker compose up -d && shred -u new.key
+```
+
+## Locked out
+
+- **Forgot a password** — another superuser resets it under
+  *Administrators*, or: `docker compose exec naco nacoctl reset-password admin`.
+- **Lost the authenticator** — use a recovery code at sign-in; otherwise
+  another superuser resets 2FA, or `nacoctl reset-totp admin`.
+- **Too many attempts** — sign-in is throttled per address, and wrong
+  passwords slow down that account from that address; wait a few minutes or
+  sign in from another machine.
+
+## Metrics
+
+NACo exports Prometheus metrics on its internal port, reachable only inside
+the Docker network:
+
+| Metric | |
+|---|---|
+| `naco_radius_decisions_total` | authorization decisions by result and method |
+| `naco_radius_accounting_total` | accounting requests |
+| `naco_radius_sessions` | active RADIUS sessions |
+| `naco_coa_requests_total` | Disconnect-Requests sent, by outcome |
+| `naco_tacacs_requests_total` | TACACS+ requests |
+| `naco_aaa_request_seconds` | latency of FreeRADIUS → NACo calls |
+
+To scrape them, run Prometheus in the same network, e.g. in a
+`docker-compose.override.yml`:
+
+```yaml
+services:
+  prometheus:
+    image: prom/prometheus           # pin the version you test with
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    networks: [naco]
+    ports: ["127.0.0.1:9090:9090"]
+```
+
+with the target `naco:8081` and `metrics_path: /metrics`.
+
+## Housekeeping NACo does by itself
+
+- Old RADIUS, TACACS+ and audit records are pruned after the retention
+  periods in `config.yaml`.
+- RADIUS sessions without accounting for `radius.stale_session_hours` are
+  closed; expired guest registrations and administrator sessions are removed
+  (and affected network sessions re-evaluated).
+- The database is optimized periodically; it uses SQLite's WAL mode and stays
+  in the `naco_data` volume.

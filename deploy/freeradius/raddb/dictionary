@@ -1,0 +1,5 @@
+# Request attributes NACo's FreeRADIUS config adds before calling NACo.
+ATTRIBUTE	NACo-Auth-Method	3000	string
+ATTRIBUTE	NACo-Inner-Identity	3001	string
+ATTRIBUTE	NACo-NAS-IP		3002	string
+ATTRIBUTE	NACo-Decision		3003	string

@@ -1,0 +1,38 @@
+# End-to-end test stack: real FreeRADIUS + NACo + a test NAS/supplicant.
+# Driven by tests/e2e/test_e2e.py (pytest -m e2e).
+name: naco-e2e
+
+x-secrets: &secrets
+  NACO_INTERNAL_TOKEN: e2e-internal-token-0123456789abcdef
+
+services:
+  naco:
+    build: { context: ../.., dockerfile: deploy/Dockerfile }
+    environment:
+      <<: *secrets
+      NACO_MASTER_KEY: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+      NACO_ADMIN_PASSWORD: e2e-admin-password
+    networks: { e2e: { ipv4_address: 172.31.250.12 } }
+
+  freeradius:
+    build: { context: ../../deploy/freeradius }
+    environment:
+      <<: *secrets
+      NACO_AAA_URL: http://172.31.250.12:8081
+    volumes: ["./.certs/server:/etc/raddb/certs:ro"]
+    depends_on: [naco]
+    networks: { e2e: { ipv4_address: 172.31.250.11 } }
+
+  client:
+    build: { context: ., dockerfile: client.Dockerfile }
+    volumes: ["./.certs/client:/certs:ro"]
+    networks: { e2e: { ipv4_address: 172.31.250.20 } }
+
+  stranger:  # an address NACo does not know
+    build: { context: ., dockerfile: client.Dockerfile }
+    networks: { e2e: { ipv4_address: 172.31.250.21 } }
+
+networks:
+  e2e:
+    ipam:
+      config: [{ subnet: 172.31.250.0/24 }]

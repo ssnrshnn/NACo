@@ -1,42 +1,40 @@
-# NACo reverse proxy
+# NACo's front door: HTTPS for the admin panel and API, plain HTTP for the
+# guest portal (captive-portal detection does not follow HTTPS).
 #
-# Environment substitution is performed by `caddy` at startup, so the same
-# Caddyfile works in dev (NACO_DOMAIN=localhost, no TLS) and in production
-# (real hostname → automatic Let's Encrypt).
-
+#   NACO_HOST  the name or IP administrators use (from .env)
+#   NACO_TLS   an e-mail address → Let's Encrypt, or "internal" → Caddy's own CA
+#
+# Only NACo's public port (8080) is proxied; its internal AAA API (8081) is
+# never reachable from here. Caddy sets X-Forwarded-For to the real client
+# address (it trusts no upstream proxy), and NACo trusts that header only
+# from Caddy's fixed address.
 {
-    email {$NACO_TLS_EMAIL}
-    admin off
-    # In dev, set ACME_CA=internal to avoid hitting Let's Encrypt.
-    {$ACME_CA_DIRECTIVE}
+	admin off
+	# The http:// block below decides what plain HTTP does (the portal must
+	# stay on HTTP), so Caddy's blanket HTTP→HTTPS redirect is off.
+	auto_https disable_redirects
 }
 
-# Match the public hostname. Caddy auto-provisions TLS via ACME for real
-# domains; for `localhost` it falls back to its self-signed local CA.
-{$NACO_DOMAIN} {
-    # Send X-Forwarded-* so NACo can correctly attribute the originating IP
-    # for rate limiting and admin audit logs.
-    encode zstd gzip
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        X-Content-Type-Options    "nosniff"
-        X-Frame-Options           "DENY"
-        Referrer-Policy           "strict-origin-when-cross-origin"
-        Permissions-Policy        "camera=(), microphone=(), geolocation=()"
-        # Hide Caddy's banner.
-        -Server
-    }
+{$NACO_HOST} {
+	tls {$NACO_TLS}
+	encode zstd gzip
+	header -Server
+	reverse_proxy naco:8080
+}
 
-    # Captive portal: leave HTTPS-redirect off so guest devices can reach it
-    # over plain HTTP from the iptables redirect.
-    @portal path /portal /portal/*
-    reverse_proxy @portal {$NACO_UPSTREAM} {
-        header_up X-Real-IP {remote_host}
-    }
-
-    # Everything else (admin UI + REST API) is HTTPS only.
-    reverse_proxy {$NACO_UPSTREAM} {
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
+# Plain HTTP: the portal for guests; everything else goes to HTTPS (admin
+# host) or to the portal (any other host — a captive-portal redirect).
+http:// {
+	header -Server
+	@portal path /portal /portal/* /static/*
+	handle @portal {
+		reverse_proxy naco:8080
+	}
+	@admin host {$NACO_HOST}
+	handle @admin {
+		redir https://{host}{uri} permanent
+	}
+	handle {
+		redir http://{$NACO_HOST}/portal 302
+	}
 }

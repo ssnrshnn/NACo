@@ -1,38 +1,4 @@
-"""DB package — re-export key symbols."""
-from naco.db.database import AsyncSessionLocal, Base, engine, get_db, init_db
-from naco.db.models import (
-    ActiveSession,
-    AdminAuditLog,
-    AdminUser,
-    AuthLog,
-    AuthMethod,
-    AuthResult,
-    Device,
-    Group,
-    GuestSession,
-    Policy,
-    PolicyAction,
-    TacacsLog,
-    User,
-)
+"""Database package: engine, column types, schema and migrations."""
+from naco.db.engine import Base, dispose_engine, get_db, get_engine, init_engine, session_factory
 
-__all__ = [
-    "ActiveSession",
-    "AdminAuditLog",
-    "AdminUser",
-    "AsyncSessionLocal",
-    "AuthLog",
-    "AuthMethod",
-    "AuthResult",
-    "Base",
-    "Device",
-    "Group",
-    "GuestSession",
-    "Policy",
-    "PolicyAction",
-    "TacacsLog",
-    "User",
-    "engine",
-    "get_db",
-    "init_db",
-]
+__all__ = ["Base", "dispose_engine", "get_db", "get_engine", "init_engine", "session_factory"]

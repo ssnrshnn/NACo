@@ -1,0 +1,62 @@
+/* NACo guest portal — no JavaScript, no external assets. */
+:root {
+  --bg-1: #0b1d2a; --bg-2: #13384a; --bg-3: #1d5068;
+  --card: rgba(255, 255, 255, .08); --line: rgba(255, 255, 255, .16);
+  --text: #f4f8fb; --muted: rgba(244, 248, 251, .7);
+  --accent: #2ec5e6; --accent-ink: #062330; --danger: #ff6b6b;
+  --radius: 18px;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg-1: #e9f4f8; --bg-2: #d6ebf2; --bg-3: #c3e1eb; --card: rgba(255, 255, 255, .78);
+          --line: rgba(6, 35, 48, .12); --text: #0b1d2a; --muted: rgba(11, 29, 42, .7); }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100svh; display: grid; place-items: center; gap: 1rem; padding: 1.25rem;
+  color: var(--text); background: radial-gradient(1200px 600px at 10% -10%, var(--bg-3), transparent),
+  linear-gradient(160deg, var(--bg-1), var(--bg-2));
+}
+.card {
+  width: min(100%, 26rem); padding: 2rem 1.75rem; border-radius: var(--radius);
+  background: var(--card); border: 1px solid var(--line); backdrop-filter: blur(14px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .28); animation: rise .5s cubic-bezier(.2, .8, .2, 1) both;
+}
+.brand { display: grid; justify-items: center; gap: .25rem; margin-bottom: 1rem; }
+.brand img { border-radius: 14px; }
+.org { margin: 0; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
+h1 { margin: .25rem 0 .5rem; font-size: 1.6rem; text-align: center; }
+.lead { margin: 0 0 1.25rem; text-align: center; color: var(--muted); }
+.stack { display: grid; gap: .9rem; }
+label { display: grid; gap: .35rem; font-size: .92rem; }
+.opt { color: var(--muted); font-weight: 400; }
+input[type=text], input[type=email] {
+  width: 100%; padding: .8rem .9rem; border-radius: 12px; border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .06); color: inherit; font: inherit; transition: border-color .2s, box-shadow .2s;
+}
+input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(46, 197, 230, .22); }
+.check { display: flex; gap: .6rem; align-items: center; }
+.check input { width: 1.2rem; height: 1.2rem; accent-color: var(--accent); }
+.terms { border: 1px solid var(--line); border-radius: 12px; padding: .7rem .9rem; font-size: .88rem; color: var(--muted); }
+.terms summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.terms p { margin: .5rem 0 0; white-space: pre-line; }
+button, .button {
+  display: inline-block; width: 100%; padding: .9rem; border: 0; border-radius: 12px; text-align: center;
+  background: var(--accent); color: var(--accent-ink); font: 600 1rem/1 inherit; cursor: pointer;
+  text-decoration: none; transition: transform .15s, filter .15s;
+}
+button:hover, .button:hover { filter: brightness(1.06); }
+button:active { transform: scale(.98); }
+.alert { padding: .7rem .9rem; border-radius: 12px; border: 1px solid var(--danger);
+         background: rgba(255, 107, 107, .14); margin: 0 0 1rem; }
+.foot { font-size: .8rem; color: var(--muted); }
+.spinner { width: 46px; height: 46px; margin: .5rem auto 1rem; border-radius: 50%;
+           border: 4px solid var(--line); border-top-color: var(--accent); animation: spin 1s linear infinite; }
+.tick { width: 56px; height: 56px; margin: .25rem auto 1rem; border-radius: 50%; background: var(--accent);
+        position: relative; animation: pop .45s cubic-bezier(.2, 1.4, .4, 1) both; }
+.tick::after { content: ""; position: absolute; left: 19px; top: 13px; width: 14px; height: 26px;
+               border: solid var(--accent-ink); border-width: 0 4px 4px 0; transform: rotate(45deg); }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

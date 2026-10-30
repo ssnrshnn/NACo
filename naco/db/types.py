@@ -1,36 +1,54 @@
-"""Custom SQLAlchemy column types."""
+"""Column types that keep the rest of the code honest."""
 from __future__ import annotations
 
-from sqlalchemy import String, TypeDecorator
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import DateTime, String
+from sqlalchemy.types import TypeDecorator
 
 from naco.core import secrets
 
 
-class EncryptedString(TypeDecorator):
-    """String column transparently encrypted at rest (AES-256-GCM).
+class UTCDateTime(TypeDecorator[datetime]):
+    """Timezone-aware UTC datetimes on SQLite.
 
-    * **Writes** encrypt when ``NACO_MASTER_KEY`` is configured, otherwise
-      store plaintext (a startup warning covers this case).
-    * **Reads** decrypt ``enc:v1:`` values and pass legacy plaintext
-      through unchanged, so turning encryption on is a lazy migration —
-      run ``nacoctl encrypt-secrets`` to convert existing rows at once.
-
-    The declared length must leave room for the encryption envelope
-    (nonce + tag + base64 + prefix ≈ plaintext × 1.4 + 50 chars).
+    SQLite has no timezone type, so values are stored as naive UTC and come
+    back aware. Binding a naive datetime is a bug and raises immediately.
     """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("naive datetime bound to a UTCDateTime column")
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC)
+
+
+class EncryptedString(TypeDecorator[str]):
+    """String encrypted at rest with AES-256-GCM, bound to its column via AAD."""
 
     impl = String
     cache_ok = True
 
-    def __init__(self, length: int = 512):
+    def __init__(self, length: int = 512, *, aad: str) -> None:
         super().__init__(length)
+        self.aad = aad
 
-    def process_bind_param(self, value, dialect):
+    def process_bind_param(self, value: str | None, dialect: Any) -> str | None:
         if value is None:
             return None
-        return secrets.encrypt(value)
+        return secrets.encrypt(value, aad=self.aad)
 
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value: str | None, dialect: Any) -> str | None:
         if value is None:
             return None
-        return secrets.decrypt(value)
+        return secrets.decrypt(value, aad=self.aad)

@@ -1,0 +1,13 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="naco-tz" content="{{ tz }}">
+{% if user %}<meta name="naco-csrf" content="{{ user.csrf_token }}">
+<meta name="naco-user" content="{{ user.username }}">
+<meta name="naco-role" content="{{ user.role.value }}">{% endif %}
+<link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+<link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/vendor/bootstrap/bootstrap.min.css">
+<link rel="stylesheet" href="/static/css/naco.css">
+<script src="/static/js/theme.js"></script>
+<script type="module" src="/static/js/app.js"></script>

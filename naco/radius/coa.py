@@ -1,217 +1,183 @@
-"""
-RADIUS Change of Authorization (CoA) & Disconnect
-==================================================
-Implements RFC 5176 Disconnect-Request packets.
+"""RFC 5176 Disconnect-Request client.
 
-The NAS (switch/AP) listens on UDP port 3799 (standard CoA port).
-We send a Disconnect-Request containing Acct-Session-Id + User-Name
-so the NAS can identify and terminate the session.
+The session is identified exactly as the NAS reported it in accounting
+(Acct-Session-Id, plus User-Name / Calling-Station-Id when known), so the
+NAS's own matching rules agree. Requests carry Event-Timestamp and a
+Message-Authenticator (RFC 3579 / BlastRADIUS hardening) and are
+retransmitted unchanged on timeout. A response is accepted only from the
+NAS address, with the request's identifier and a valid Response
+Authenticator (and Message-Authenticator, when present).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import hmac
+import ipaddress
+import logging
 import os
+import socket
 import struct
-from typing import Any
+import time
+from dataclasses import dataclass
+from enum import StrEnum
 
-from naco.core.logger import get_logger
+from naco.core.metrics import REGISTRY
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
-# RADIUS packet codes (RFC 5176)
 DISCONNECT_REQUEST = 40
-DISCONNECT_ACK     = 41
-DISCONNECT_NAK     = 42
-COA_REQUEST        = 43
-COA_ACK            = 44
-COA_NAK            = 45
+DISCONNECT_ACK = 41
+DISCONNECT_NAK = 42
 
-# Standard CoA/DM port
-COA_PORT = 3799
-
-# Common attribute type numbers (RFC 2865 / 5176)
-ATTR_USER_NAME       = 1
-ATTR_NAS_IP_ADDRESS  = 4
+ATTR_USER_NAME = 1
+ATTR_CALLING_STATION_ID = 31
 ATTR_ACCT_SESSION_ID = 44
 ATTR_EVENT_TIMESTAMP = 55
-ATTR_NAS_PORT        = 5
+ATTR_MESSAGE_AUTHENTICATOR = 80
+
+COA_REQUESTS = REGISTRY.counter("naco_coa_requests_total", "Disconnect-Requests sent", ["outcome"])
 
 
-def _encode_attribute(attr_type: int, value: bytes) -> bytes:
-    """Encode a single RADIUS attribute as type-length-value."""
-    length = 2 + len(value)
-    return struct.pack("!BB", attr_type, length) + value
+class Outcome(StrEnum):
+    ACK = "ack"
+    NAK = "nak"
+    TIMEOUT = "timeout"
+    ERROR = "error"
 
 
-def _build_disconnect_request(
-    session_id: str,
-    nas_ip: str,
-    username: str = "",
-    secret: str = "",
-) -> bytes:
-    """Build a raw RADIUS Disconnect-Request packet (code 40).
+@dataclass(frozen=True)
+class CoaTarget:
+    ip: str
+    port: int
+    secret: str
 
-    Returns the complete UDP payload ready to send to the NAS on port 3799.
-    """
-    # Build attribute list
-    attrs = bytearray()
-    attrs += _encode_attribute(ATTR_ACCT_SESSION_ID, session_id.encode("ascii"))
 
-    if nas_ip:
-        import socket
-        try:
-            packed_ip = socket.inet_aton(nas_ip)
-            attrs += _encode_attribute(ATTR_NAS_IP_ADDRESS, packed_ip)
-        except OSError:
-            pass
+@dataclass(frozen=True)
+class CoaResult:
+    outcome: Outcome
+    detail: str = ""
 
+    @property
+    def ok(self) -> bool:
+        return self.outcome is Outcome.ACK
+
+
+def _attr(kind: int, value: bytes) -> bytes:
+    if len(value) > 253:
+        value = value[:253]
+    return struct.pack("!BB", kind, len(value) + 2) + value
+
+
+def build_disconnect(secret: bytes, identifier: int, *, acct_session_id: str, username: str = "",
+                     calling_station_id: str = "", event_time: int | None = None) -> bytes:
+    attrs = _attr(ATTR_ACCT_SESSION_ID, acct_session_id.encode())
     if username:
-        attrs += _encode_attribute(ATTR_USER_NAME, username.encode("utf-8"))
+        attrs += _attr(ATTR_USER_NAME, username.encode())
+    if calling_station_id:
+        attrs += _attr(ATTR_CALLING_STATION_ID, calling_station_id.encode())
+    attrs += _attr(ATTR_EVENT_TIMESTAMP, struct.pack("!I", int(time.time() if event_time is None else event_time)))
+    ma_offset = 20 + len(attrs) + 2
+    attrs += _attr(ATTR_MESSAGE_AUTHENTICATOR, bytes(16))
+    header = struct.pack("!BBH", DISCONNECT_REQUEST, identifier, 20 + len(attrs))
 
-    # Packet: code(1) + identifier(1) + length(2) + authenticator(16) + attributes
-    identifier = os.urandom(1)[0]
-    length = 20 + len(attrs)
-
-    # First pass: authenticator = 16 zero bytes for MD5 calculation
-    header = struct.pack("!BBH", DISCONNECT_REQUEST, identifier, length)
-    zero_auth = b"\x00" * 16
-    raw = header + zero_auth + bytes(attrs)
-
-    # Authenticator = MD5(packet with zero auth + secret)
-    authenticator = hashlib.md5(raw + secret.encode("utf-8")).digest()
-
-    # Reassemble with real authenticator
-    return header + authenticator + bytes(attrs)
+    # RFC 5176 §3.5: Message-Authenticator over the packet with a zero
+    # Request Authenticator, then the Request Authenticator over the result.
+    zeroed = header + bytes(16) + attrs
+    mac = hmac.new(secret, zeroed, hashlib.md5).digest()
+    with_ma = bytearray(zeroed)
+    with_ma[ma_offset:ma_offset + 16] = mac
+    authenticator = hashlib.md5(bytes(with_ma) + secret).digest()
+    with_ma[4:20] = authenticator
+    return bytes(with_ma)
 
 
-def verify_response_authenticator(
-    request_packet: bytes, response_data: bytes, secret: str
-) -> bool:
-    """Validate a RADIUS CoA/Disconnect response per RFC 5176 §3.3.
+def _find_attr(packet: bytes, kind: int, length: int) -> int | None:
+    """Offset of the first attribute ``kind`` (value start), or None."""
+    pos = 20
+    while pos + 2 <= length:
+        a_type, a_len = packet[pos], packet[pos + 1]
+        if a_len < 2 or pos + a_len > length:
+            return None
+        if a_type == kind:
+            return pos + 2
+        pos += a_len
+    return None
 
-    ``ResponseAuth = MD5(Code + ID + Length + RequestAuth + Attributes + Secret)``
 
-    This is exposed as a pure function so the unit tests can fuzz forged
-    responses without standing up a real UDP listener.
-
-    Returns ``True`` when the response authenticator matches the value an
-    honest NAS would have computed; ``False`` otherwise (including any
-    malformed input).
-    """
-    if len(response_data) < 20 or len(request_packet) < 20:
+def verify_response(request: bytes, response: bytes, secret: bytes) -> bool:
+    if len(response) < 20 or len(request) < 20:
         return False
-    import struct
-
-    try:
-        resp_length = struct.unpack("!H", response_data[2:4])[0]
-    except Exception:
+    length = struct.unpack("!H", response[2:4])[0]
+    if length < 20 or length > len(response) or response[1] != request[1]:
         return False
-    if resp_length < 20 or resp_length > len(response_data):
+    expected = hashlib.md5(response[:4] + request[4:20] + response[20:length] + secret).digest()
+    if not hmac.compare_digest(expected, response[4:20]):
         return False
-
-    resp_auth = response_data[4:20]
-    req_auth  = request_packet[4:20]
-    payload   = (
-        response_data[:4]
-        + req_auth
-        + response_data[20:resp_length]
-        + secret.encode("utf-8")
-    )
-    expected = hashlib.md5(payload).digest()
-    # constant-time compare to make accidental timing leaks less interesting
-    import hmac as _hmac
-    return _hmac.compare_digest(expected, resp_auth)
+    ma = _find_attr(response, ATTR_MESSAGE_AUTHENTICATOR, length)
+    if ma is not None:
+        if response[ma - 1] != 18:
+            return False
+        check = bytearray(response[:length])
+        check[4:20] = request[4:20]
+        check[ma:ma + 16] = bytes(16)
+        if not hmac.compare_digest(hmac.new(secret, bytes(check), hashlib.md5).digest(), response[ma:ma + 16]):
+            return False
+    return True
 
 
-async def send_disconnect_request(
-    nas_ip: str,
-    session_id: str,
-    username: str = "",
-    secret: str = "",
-    port: int = COA_PORT,
-    timeout: float = 5.0,
-) -> dict[str, Any]:
-    """Send a RADIUS Disconnect-Request to a NAS and wait for the response.
+class _Exchange(asyncio.DatagramProtocol):
+    def __init__(self, request: bytes, secret: bytes, peer: tuple[str, int]) -> None:
+        self.request, self.secret, self.peer = request, secret, peer
+        self.answer: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
 
-    Returns a dict with:
-      - ``success``: True if Disconnect-ACK received
-      - ``code``: response packet code (41=ACK, 42=NAK) or 0 on timeout
-      - ``message``: human-readable result description
-    """
-    import asyncio
-    import socket
-
-    packet = _build_disconnect_request(session_id, nas_ip, username, secret)
-
-    loop = asyncio.get_running_loop()
-
-    # Create a one-shot UDP socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setblocking(False)
-
-    try:
-        await loop.sock_sendto(sock, packet, (nas_ip, port))
-        log.info(
-            "Disconnect-Request sent to NAS %s:%d session=%s user=%s",
-            nas_ip, port, session_id, username,
-        )
-
-        # Wait for response with timeout
-        try:
-            data = await asyncio.wait_for(
-                loop.sock_recv(sock, 4096),
-                timeout=timeout,
-            )
-        except TimeoutError:
-            log.warning("Disconnect-Request to %s timed out after %.1fs", nas_ip, timeout)
-            return {"success": False, "code": 0, "message": f"Timeout — NAS {nas_ip} did not respond"}
-
-        if len(data) < 20:
-            return {"success": False, "code": 0, "message": "Invalid response (too short)"}
-
-        resp_code = data[0]
-
-        if not verify_response_authenticator(packet, data, secret):
-            log.warning(
-                "Disconnect response from NAS %s has invalid authenticator — possible spoofing",
-                nas_ip,
-            )
-            return {"success": False, "code": resp_code, "message": "Invalid response authenticator"}
-
-        if resp_code == DISCONNECT_ACK:
-            log.info("Disconnect-ACK from NAS %s for session %s", nas_ip, session_id)
-            return {"success": True, "code": DISCONNECT_ACK, "message": "Session disconnected successfully"}
-        elif resp_code == DISCONNECT_NAK:
-            log.warning("Disconnect-NAK from NAS %s for session %s", nas_ip, session_id)
-            return {"success": False, "code": DISCONNECT_NAK, "message": "NAS rejected disconnect request"}
+    def datagram_received(self, data: bytes, addr: tuple[str | int, ...]) -> None:
+        if (str(addr[0]), int(addr[1])) != self.peer or self.answer.done():
+            return
+        if verify_response(self.request, data, self.secret):
+            self.answer.set_result(data)
         else:
-            log.warning("Unexpected RADIUS response code %d from NAS %s", resp_code, nas_ip)
-            return {"success": False, "code": resp_code, "message": f"Unexpected response code {resp_code}"}
+            log.warning("CoA: ignoring a response from %s with a bad authenticator", addr[0])
 
+    def error_received(self, exc: Exception) -> None:
+        if not self.answer.done():
+            self.answer.set_exception(exc)
+
+
+async def disconnect(target: CoaTarget, acct_session_id: str, *, username: str = "",
+                     calling_station_id: str = "", timeout: float = 2.0, retries: int = 3) -> CoaResult:
+    try:
+        ip = ipaddress.ip_address(target.ip)
+    except ValueError:
+        return _count(CoaResult(Outcome.ERROR, f"invalid NAS address {target.ip!r}"))
+    secret = target.secret.encode()
+    packet = build_disconnect(secret, os.urandom(1)[0], acct_session_id=acct_session_id,
+                              username=username, calling_station_id=calling_station_id)
+    peer = (str(ip), target.port)
+    loop = asyncio.get_running_loop()
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    try:
+        transport, proto = await loop.create_datagram_endpoint(
+            lambda: _Exchange(packet, secret, peer), family=family, remote_addr=peer)
     except OSError as exc:
-        log.error("Failed to send Disconnect-Request to %s: %s", nas_ip, exc)
-        return {"success": False, "code": 0, "message": f"Network error: {exc}"}
+        return _count(CoaResult(Outcome.ERROR, str(exc)))
+    try:
+        for _ in range(retries):
+            transport.sendto(packet)
+            try:
+                answer = await asyncio.wait_for(asyncio.shield(proto.answer), timeout)
+            except TimeoutError:
+                continue
+            except OSError as exc:
+                return _count(CoaResult(Outcome.ERROR, str(exc)))
+            if answer[0] == DISCONNECT_ACK:
+                return _count(CoaResult(Outcome.ACK))
+            return _count(CoaResult(Outcome.NAK, f"NAS answered code {answer[0]}"))
+        return _count(CoaResult(Outcome.TIMEOUT, f"no answer from {target.ip}:{target.port}"))
     finally:
-        sock.close()
+        transport.close()
 
 
-async def disconnect_session(
-    session_id: str,
-    nas_ip: str,
-    acct_session_id: str,
-    username: str,
-    nas_secret: str,
-) -> dict[str, Any]:
-    """High-level helper: look up the NAS secret and send Disconnect-Request."""
-    if not nas_secret:
-        return {
-            "success": False, "code": 0,
-            "message": f"No shared secret found for NAS {nas_ip} — cannot send CoA",
-        }
-
-    return await send_disconnect_request(
-        nas_ip=nas_ip,
-        session_id=acct_session_id,
-        username=username,
-        secret=nas_secret,
-    )
+def _count(result: CoaResult) -> CoaResult:
+    COA_REQUESTS.inc(outcome=result.outcome.value)
+    return result

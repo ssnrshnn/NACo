@@ -1,0 +1,24 @@
+# The internal AAA API token (rlm_rest 3.x reads headers from control:).
+naco_token {
+	update control {
+		&REST-HTTP-Header := "Authorization: Bearer $ENV{NACO_INTERNAL_TOKEN}"
+	}
+}
+
+# Identify the NAS by the packet's source address — NAS-IP-Address is only
+# what the NAS claims about itself.
+naco_nas_ip {
+	update request {
+		&NACo-NAS-IP := "%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}}"
+	}
+}
+
+# MAB has no credential to check: NACo decides in post-auth.
+naco_mab {
+	update request {
+		&NACo-Auth-Method := "MAB"
+	}
+	update control {
+		&Auth-Type := Accept
+	}
+}

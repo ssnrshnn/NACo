@@ -50,3 +50,11 @@ NACo.png
 # Generated EAP TLS material (quickstart.sh)
 deploy/freeradius/certs/
 site/
+dev.db
+tests/e2e/.certs/
+
+# macOS iCloud conflict copies ("file 2.py") — never commit or ship them
+* 2
+* 2.*
+tests/ui/.shots/
+secrets/

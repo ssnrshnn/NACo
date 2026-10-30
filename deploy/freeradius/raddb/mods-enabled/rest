@@ -1,0 +1,61 @@
+# Requests are sent as rlm_rest's own JSON encoding of the request list
+# (body = json without a "data" template), so values are always escaped.
+# NACo answers 204/200 (ok/updated), 401 (reject) or an error (fail).
+rest naco {
+	connect_uri = "$ENV{NACO_AAA_URL}"
+	connect_timeout = 3.0
+
+	authenticate {
+		uri = "${..connect_uri}/aaa/authenticate"
+		method = "post"
+		body = "json"
+		timeout = 15.0
+	}
+	post-auth {
+		uri = "${..connect_uri}/aaa/authorize"
+		method = "post"
+		body = "json"
+		timeout = 10.0
+	}
+	accounting {
+		uri = "${..connect_uri}/aaa/accounting"
+		method = "post"
+		body = "json"
+		timeout = 10.0
+	}
+
+	# Connections are opened on demand: FreeRADIUS starts (and keeps
+	# running) while NACo restarts; requests in that window fail closed.
+	pool {
+		start = 0
+		min = 0
+		max = 32
+		spare = 8
+		uses = 0
+		retry_delay = 1
+		lifetime = 0
+		idle_timeout = 60
+	}
+}
+
+rest naco_clients {
+	connect_uri = "$ENV{NACO_AAA_URL}"
+	connect_timeout = 3.0
+
+	authorize {
+		uri = "${..connect_uri}/aaa/clients/%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}}"
+		method = "get"
+		timeout = 5.0
+	}
+
+	pool {
+		start = 0
+		min = 0
+		max = 8
+		spare = 2
+		uses = 0
+		retry_delay = 1
+		lifetime = 0
+		idle_timeout = 60
+	}
+}

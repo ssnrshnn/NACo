@@ -1,111 +1,76 @@
-"""Shared test fixtures for NACo."""
+"""Shared pytest fixtures.
+
+Every test runs with valid secrets in the environment and its own SQLite file,
+so nothing leaks between tests or depends on the developer's machine.
+"""
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncGenerator
+import base64
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-# Point config at a minimal in-memory YAML before any naco imports
-os.environ["NACO_CONFIG"] = os.path.join(os.path.dirname(__file__), "test_config.yaml")
+from naco import config
 
-from naco.api import create_api_app
-from naco.api.auth import hash_password
-from naco.db import get_db
-from naco.db.database import Base
-from naco.db.models import AdminUser
-
-# ---------------------------------------------------------------------------
-# In-memory SQLite engine & session
-# ---------------------------------------------------------------------------
-
-_test_engine = create_async_engine(
-    "sqlite+aiosqlite://",
-    echo=False,
-    connect_args={"check_same_thread": False},
-)
-_TestSession = async_sessionmaker(
-    bind=_test_engine, class_=AsyncSession, expire_on_commit=False
-)
+TEST_MASTER_KEY = bytes(range(32))
+TEST_INTERNAL_TOKEN = "test-internal-token-0123456789abcdef"
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _reset_policy_cache() -> AsyncGenerator[None, None]:
-    """Clear the process-level policy cache around every test.
-
-    The engine caches compiled policies in memory (invalidated by the API on
-    writes). Tests seed the ``policies`` table directly, bypassing that hook,
-    so we reset the cache before and after each test to keep them isolated.
-    """
-    from naco.policy.engine import invalidate_policy_cache
-
-    invalidate_policy_cache()
+@pytest.fixture(autouse=True)
+def _isolated_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("NACO_MASTER_KEY", base64.b64encode(TEST_MASTER_KEY).decode())
+    monkeypatch.setenv("NACO_INTERNAL_TOKEN", TEST_INTERNAL_TOKEN)
+    monkeypatch.setenv("NACO_DATABASE_PATH", str(tmp_path / "naco.db"))
+    for var in ("NACO_CONFIG", "NACO_DEV", "NACO_TRUSTED_PROXIES", "NACO_ADMIN_PASSWORD",
+                "NACO_LDAP_BIND_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+    config.reset_caches()
     yield
-    invalidate_policy_cache()
+    config.reset_caches()
 
 
-@pytest_asyncio.fixture
-async def db() -> AsyncGenerator[AsyncSession, None]:
-    """Yield a DB session with fresh tables for every test."""
-    async with _test_engine.begin() as conn:
+@pytest.fixture(autouse=True)
+def _fast_bcrypt(monkeypatch):
+    from naco.core import passwords
+    monkeypatch.setattr(passwords, "BCRYPT_ROUNDS", 4)
+    passwords._dummy_hash.cache_clear()
+    yield
+    passwords._dummy_hash.cache_clear()
+
+
+@pytest.fixture
+async def app_db(tmp_path):
+    """The process-wide engine on a freshly migrated database."""
+    from naco.db import engine as eng
+    from naco.db.migrate import upgrade_head
+
+    path = str(tmp_path / "naco.db")
+    upgrade_head(path)
+    eng.init_engine(path)
+    yield eng.session_factory()
+    await eng.dispose_engine()
+
+
+def write_config(tmp_path, monkeypatch, text: str) -> None:
+    p = tmp_path / "config.yaml"
+    p.write_text(text)
+    monkeypatch.setenv("NACO_CONFIG", str(p))
+    config.reset_caches()
+
+
+@pytest.fixture
+async def db_engine(tmp_path):
+    import naco.db.models  # noqa: F401 — register tables
+    from naco.db.engine import Base, create_engine_for
+
+    engine = create_engine_for(str(tmp_path / "models.db"))
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
 
-    async with _TestSession() as session:
+
+@pytest.fixture
+async def db(db_engine):
+    async with async_sessionmaker(db_engine, expire_on_commit=False)() as session:
         yield session
-
-    async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-# ---------------------------------------------------------------------------
-# FastAPI test client with DB override
-# ---------------------------------------------------------------------------
-
-@pytest_asyncio.fixture
-async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    """HTTPX async client wired to the API app with the test DB."""
-    app = create_api_app()
-
-    async def _override_get_db():
-        yield db
-
-    app.dependency_overrides[get_db] = _override_get_db
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-
-# ---------------------------------------------------------------------------
-# Convenience: pre-seeded admin user
-# ---------------------------------------------------------------------------
-
-@pytest_asyncio.fixture
-async def admin_user(db: AsyncSession) -> AdminUser:
-    from naco.db.models import AdminRole
-
-    user = AdminUser(
-        username="testadmin",
-        password_hash=hash_password("Admin1234"),
-        email="admin@test.local",
-        is_superuser=True,
-        role=AdminRole.SUPERUSER,
-        enabled=True,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
-
-
-@pytest_asyncio.fixture
-async def admin_token(client: AsyncClient, admin_user: AdminUser) -> str:
-    """Return a valid JWT for the seeded admin."""
-    resp = await client.post(
-        "/api/v1/auth/login",
-        json={"username": "testadmin", "password": "Admin1234"},
-    )
-    assert resp.status_code == 200
-    return resp.json()["access_token"]

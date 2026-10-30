@@ -1,4 +1,1 @@
-"""Web Admin UI package."""
-from naco.web.app import app as web_app
-
-__all__ = ["web_app"]
+"""The public HTTP application: admin UI, REST API and guest portal."""

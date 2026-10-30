@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  {% include "_head.html" %}
+  <title>Finish setting up · {{ server_name }}</title>
+</head>
+<body data-page="setup" data-step="{{ step }}">
+<main class="auth">
+  <section class="panel auth-card" id="setup">
+    <div class="brand"><img src="/static/img/emblem-192.png" alt="" width="44" height="44"><b>NACo</b></div>
+    <div class="steps"><i class="{{ 'on' }}"></i><i class="{{ 'on' if step == 'totp' else '' }}"></i></div>
+    <div id="setup-body"></div>
+  </section>
+</main>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>

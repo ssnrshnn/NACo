@@ -1,83 +1,108 @@
-"""NACo — main entry point.
+"""NACo entry point: one process, one event loop.
 
-Boots a single uvicorn server hosting `naco.app:app`. All background services
-(RADIUS, TACACS+, profiler, log retention, webhook dispatcher, metrics
-collector, guest-session expiry) are started by the FastAPI lifespan.
+* port ``http_port`` (8080) — admin UI, REST API, guest portal (behind Caddy)
+* port ``internal_port`` (8081) — the AAA API FreeRADIUS calls, and /metrics
+* port ``tacacs.port`` (4949) — TACACS+, when enabled
+* background: maintenance, CoA re-evaluation
+
+Startup refuses invalid configuration or secrets before touching anything.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import signal
+import sys
+from collections.abc import Iterator
 
 import uvicorn
 
-from naco.config import check_production_secrets, check_weak_secrets, get_config
-from naco.core import get_logger, setup_logging
+from naco import __version__
+from naco.aaa.app import create_internal_app
+from naco.bootstrap import ensure_admin
+from naco.config import AppConfig, ConfigError, get_config, get_secrets
+from naco.core.logging import setup_logging
+from naco.db.engine import dispose_engine, init_engine
+from naco.db.migrate import upgrade_head
+from naco.maintenance import run_maintenance
+from naco.radius.reevaluate import reevaluator
+from naco.tacacs.server import TacacsServer
+from naco.web.app import create_public_app
 
-log = get_logger(__name__)
+log = logging.getLogger("naco")
 
 
-def _enforce_production_secrets() -> None:
-    """Refuse to boot with placeholder secrets unless ``server.debug`` is on.
+class _Server(uvicorn.Server):
+    """uvicorn server whose signals are handled by ``serve`` for both listeners."""
 
-    Placeholder session/API/CSRF secrets make every cookie and JWT forgeable;
-    the default admin password is public knowledge. quickstart.sh generates
-    real values — a placeholder in production means setup was skipped.
-    """
-    cfg = get_config()
-    for warning in check_weak_secrets(cfg):
-        log.warning("weak configuration: %s (change it, but not blocking startup)", warning)
-    problems = check_production_secrets(cfg)
-    if not problems:
-        return
-    if cfg.server.debug:
-        for p in problems:
-            log.warning("placeholder secret (allowed in debug mode): %s", p)
-        return
-    for p in problems:
-        log.critical("placeholder secret: %s", p)
-    log.critical(
-        "Refusing to start with placeholder secrets while server.debug is "
-        "false. Run ./quickstart.sh to generate a proper .env, or set real "
-        "values via NACO_SESSION_SECRET / NACO_API_SECRET / NACO_CSRF_SECRET "
-        "/ NACO_ADMIN_PASSWORD and config.yaml."
+    @contextlib.contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        yield
+
+
+def _servers(cfg: AppConfig) -> list[_Server]:
+    common = {"host": cfg.server.host, "access_log": False, "log_config": None,
+              "server_header": False, "date_header": False, "lifespan": "off"}
+    public = uvicorn.Config(
+        create_public_app(), port=cfg.server.http_port, proxy_headers=True,
+        forwarded_allow_ips=list(cfg.server.trusted_proxies), **common,  # type: ignore[arg-type]
     )
-    raise SystemExit(1)
-
-
-async def _serve() -> None:
-    cfg = get_config()
-
-    # `proxy_headers=True` makes uvicorn rewrite `request.client.host` /
-    # `request.url.scheme` from `X-Forwarded-For` / `X-Forwarded-Proto` —
-    # but only for hops listed in `forwarded_allow_ips`. We feed it
-    # `server.trusted_proxies` directly so an attacker who can speak to
-    # the app port directly cannot spoof the source IP. Application code
-    # additionally consults `naco.core.utils.client_ip()` which respects
-    # the same allow-list when reading the raw header.
-    trusted = cfg.server.trusted_proxies or []
-    allow   = ",".join(trusted) if trusted else "127.0.0.1"
-
-    config = uvicorn.Config(
-        "naco.app:app",
-        host                  = cfg.server.host,
-        port                  = cfg.server.port,
-        log_level             = cfg.server.log_level.lower(),
-        proxy_headers         = True,
-        forwarded_allow_ips   = allow,
-        access_log            = False,
-        timeout_graceful_shutdown = 10,
+    internal = uvicorn.Config(
+        create_internal_app(), port=cfg.server.internal_port, proxy_headers=False, **common,  # type: ignore[arg-type]
     )
-    server = uvicorn.Server(config)
-    await server.serve()
+    return [_Server(public), _Server(internal)]
+
+
+async def serve(cfg: AppConfig) -> None:
+    init_engine(cfg.database.path)
+    await ensure_admin()
+    servers = _servers(cfg)
+    background = [
+        asyncio.create_task(run_maintenance(), name="maintenance"),
+        asyncio.create_task(reevaluator.run_forever(), name="coa-reevaluation"),
+    ]
+    tacacs = TacacsServer(cfg.tacacs) if cfg.tacacs.enabled else None
+    if tacacs is not None:
+        await tacacs.start(cfg.server.host, cfg.tacacs.port)
+
+    loop = asyncio.get_running_loop()
+
+    def stop() -> None:
+        log.info("shutting down")
+        for server in servers:
+            server.should_exit = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop)
+
+    log.info("NACo %s — UI/API on :%d, AAA on :%d%s", __version__, cfg.server.http_port, cfg.server.internal_port,
+             f", TACACS+ on :{cfg.tacacs.port}" if tacacs else "")
+    try:
+        await asyncio.gather(*(s.serve() for s in servers))
+    finally:
+        if tacacs is not None:
+            await tacacs.stop()
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await dispose_engine()
 
 
 def main() -> None:
-    setup_logging()
-    _enforce_production_secrets()
     try:
-        asyncio.run(_serve())
-    except KeyboardInterrupt:
-        pass
+        cfg = get_config()
+        get_secrets()
+    except ConfigError as exc:
+        sys.stderr.write(f"naco: {exc}\n")
+        raise SystemExit(2) from None
+    setup_logging(cfg.server.log_level, cfg.server.log_format, cfg.syslog)
+    upgrade_head(cfg.database.path)
+    try:
+        asyncio.run(serve(cfg))
+    except ConfigError as exc:
+        log.critical("%s", exc)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

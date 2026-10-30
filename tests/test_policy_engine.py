@@ -1,229 +1,79 @@
-"""Tests for naco.policy.engine — condition evaluators and engine logic."""
-from __future__ import annotations
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
-import json
+from naco.db.models import Policy, PolicyAction
+from naco.policy.context import AuthContext
+from naco.policy.engine import DEFAULT_DENY_REASON, compile_policy, decide, evaluate, explain
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from naco.db.models import Group, Policy, PolicyAction
-from naco.policy.engine import (
-    AuthContext,
-    PolicyEngine,
-    _eval_condition,
-    _string_match,
-)
-
-# ---------------------------------------------------------------------------
-# _string_match
-# ---------------------------------------------------------------------------
-
-class TestStringMatch:
-    def test_equals(self):
-        assert _string_match("alice", "equals", "Alice") is True
-
-    def test_equals_mismatch(self):
-        assert _string_match("alice", "equals", "bob") is False
-
-    def test_startswith(self):
-        assert _string_match("admin_user", "startswith", "admin") is True
-
-    def test_endswith(self):
-        assert _string_match("user_admin", "endswith", "admin") is True
-
-    def test_contains(self):
-        assert _string_match("hello_world_test", "contains", "world") is True
-
-    def test_regex(self):
-        assert _string_match("user123", "regex", r"^user\d+$") is True
-
-    def test_regex_no_match(self):
-        assert _string_match("admin", "regex", r"^user\d+$") is False
-
-    def test_regex_invalid(self):
-        assert _string_match("test", "regex", r"[invalid") is False
-
-    def test_unknown_op(self):
-        assert _string_match("test", "nonexistent", "test") is False
+TZ = ZoneInfo("UTC")
 
 
-# ---------------------------------------------------------------------------
-# _eval_condition
-# ---------------------------------------------------------------------------
-
-class TestEvalCondition:
-    def test_always(self):
-        ctx = AuthContext()
-        assert _eval_condition({"type": "always"}, ctx) is True
-
-    def test_username_equals(self):
-        ctx = AuthContext(username="alice")
-        assert _eval_condition({"type": "username", "op": "equals", "value": "Alice"}, ctx) is True
-
-    def test_group_in(self):
-        ctx = AuthContext(group_name="employees")
-        cond = {"type": "group", "op": "in", "value": ["employees", "contractors"]}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_group_not_in(self):
-        ctx = AuthContext(group_name="guests")
-        cond = {"type": "group", "op": "in", "value": ["employees"]}
-        assert _eval_condition(cond, ctx) is False
-
-    def test_mac_equals(self):
-        ctx = AuthContext(mac_address="aa:bb:cc:dd:ee:ff")
-        cond = {"type": "mac", "op": "equals", "value": "AA:BB:CC:DD:EE:FF"}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_mac_startswith(self):
-        ctx = AuthContext(mac_address="aa:bb:cc:dd:ee:ff")
-        cond = {"type": "mac", "op": "startswith", "value": "aa:bb:cc"}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_mac_in(self):
-        ctx = AuthContext(mac_address="aa:bb:cc:dd:ee:ff")
-        cond = {"type": "mac", "op": "in", "value": ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_mac_invalid(self):
-        ctx = AuthContext(mac_address="not-a-mac")
-        cond = {"type": "mac", "op": "equals", "value": "AA:BB:CC:DD:EE:FF"}
-        assert _eval_condition(cond, ctx) is False
-
-    def test_time_within(self):
-        ctx = AuthContext()
-        ctx.timestamp = ctx.timestamp.replace(hour=12, minute=0)
-        cond = {"type": "time", "op": "between", "start": "08:00", "end": "17:00"}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_time_outside(self):
-        ctx = AuthContext()
-        ctx.timestamp = ctx.timestamp.replace(hour=20, minute=0)
-        cond = {"type": "time", "op": "between", "start": "08:00", "end": "17:00"}
-        assert _eval_condition(cond, ctx) is False
-
-    def test_device_type_in(self):
-        ctx = AuthContext(device_type="laptop")
-        cond = {"type": "device_type", "op": "in", "value": ["Laptop", "Workstation"]}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_nas_ip_equals(self):
-        ctx = AuthContext(nas_ip="192.168.1.1")
-        cond = {"type": "nas_ip", "op": "equals", "value": "192.168.1.1"}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_nas_ip_in(self):
-        ctx = AuthContext(nas_ip="10.0.0.1")
-        cond = {"type": "nas_ip", "op": "in", "value": ["10.0.0.1", "10.0.0.2"]}
-        assert _eval_condition(cond, ctx) is True
-
-    def test_unknown_type(self):
-        ctx = AuthContext()
-        assert _eval_condition({"type": "foobar"}, ctx) is False
+def ctx(**kw):
+    base = {"auth_method": "PEAP", "username": "alice", "group": "staff",
+            "now": datetime(2026, 10, 28, 10, 0, tzinfo=UTC)}
+    base.update(kw)
+    return AuthContext(**base)
 
 
-# ---------------------------------------------------------------------------
-# PolicyEngine.evaluate (needs a real async session with policies)
-# ---------------------------------------------------------------------------
+def pol(id_, name, priority, action, conditions, vlan=None, attrs=None, enabled=True):
+    return Policy(id=id_, name=name, priority=priority, action=action, conditions=conditions,
+                  vlan=vlan, reply_attributes=attrs or {}, enabled=enabled)
 
-@pytest.mark.asyncio
-class TestPolicyEngineEvaluate:
-    async def test_first_match_wins(self, db: AsyncSession):
-        """Higher-priority (lower number) rule wins."""
-        grp = Group(name="staff")
-        db.add(grp)
-        await db.flush()
 
-        p1 = Policy(
-            name="deny-all",
-            priority=200,
-            conditions=json.dumps([{"type": "always"}]),
-            action=PolicyAction.DENY,
-            enabled=True,
-        )
-        p2 = Policy(
-            name="permit-staff",
-            priority=100,
-            conditions=json.dumps([{"type": "group", "op": "in", "value": ["staff"]}]),
-            action=PolicyAction.PERMIT,
-            vlan=10,
-            enabled=True,
-        )
-        db.add_all([p1, p2])
-        await db.commit()
+STAFF = [{"type": "group", "op": "in", "value": ["staff"]}]
 
-        engine = PolicyEngine()
-        ctx = AuthContext(username="alice", group_name="staff")
-        result = await engine.evaluate(ctx, db)
 
-        assert result.action == PolicyAction.PERMIT
-        assert result.vlan == 10
-        assert result.policy_name == "permit-staff"
+def test_no_policies_means_deny():
+    d = decide([], ctx(), TZ)
+    assert not d.accepted
+    assert d.reason == DEFAULT_DENY_REASON
+    assert d.policy_id is None
 
-    async def test_default_deny_when_no_match(self, db: AsyncSession):
-        """No enabled policies → default deny."""
-        engine = PolicyEngine()
-        ctx = AuthContext(username="nobody")
-        result = await engine.evaluate(ctx, db)
 
-        assert result.action == PolicyAction.DENY
-        assert result.vlan is None
+def test_first_match_wins_in_given_order():
+    policies = [
+        compile_policy(pol(1, "deny-bob", 10, PolicyAction.DENY,
+                           [{"type": "username", "op": "equals", "value": "bob"}])),
+        compile_policy(pol(2, "staff", 20, PolicyAction.PERMIT, STAFF, vlan=10, attrs={"Filter-Id": "staff"})),
+        compile_policy(pol(3, "everyone", 30, PolicyAction.PERMIT, [{"type": "always"}], vlan=99)),
+    ]
+    d = decide(policies, ctx(), TZ)
+    assert d.accepted and d.vlan == 10 and d.policy_name == "staff"
+    assert d.reply_attributes == {"Filter-Id": "staff"}
+    assert not decide(policies, ctx(username="bob"), TZ).accepted
+    assert decide(policies, ctx(group="contractors"), TZ).vlan == 99
 
-    async def test_disabled_policy_skipped(self, db: AsyncSession):
-        p = Policy(
-            name="disabled-rule",
-            priority=1,
-            conditions=json.dumps([{"type": "always"}]),
-            action=PolicyAction.PERMIT,
-            enabled=False,
-        )
-        db.add(p)
-        await db.commit()
 
-        engine = PolicyEngine()
-        ctx = AuthContext(username="alice")
-        result = await engine.evaluate(ctx, db)
+def test_empty_condition_list_matches_everything():
+    d = decide([compile_policy(pol(1, "all", 1, PolicyAction.PERMIT, []))], ctx(), TZ)
+    assert d.accepted and d.vlan is None
 
-        assert result.action == PolicyAction.DENY  # skipped disabled → default deny
 
-    async def test_invalid_conditions_json_skipped(self, db: AsyncSession):
-        p = Policy(
-            name="broken-json",
-            priority=1,
-            conditions="NOT VALID JSON",
-            action=PolicyAction.PERMIT,
-            enabled=True,
-        )
-        db.add(p)
-        await db.commit()
+def test_explain_reports_every_condition():
+    policies = [compile_policy(pol(1, "staff-peap", 1, PolicyAction.PERMIT, [
+        *STAFF, {"type": "auth_method", "value": ["EAP-TLS"]}]))]
+    (trace,) = explain(policies, ctx(), TZ)
+    assert trace.matched is False
+    assert trace.conditions == [("group in staff", True), ("auth_method in EAP-TLS", False)]
 
-        engine = PolicyEngine()
-        ctx = AuthContext(username="alice")
-        result = await engine.evaluate(ctx, db)
 
-        assert result.action == PolicyAction.DENY  # invalid JSON → skipped
+async def test_evaluate_reads_enabled_policies_in_priority_order(db):
+    db.add_all([
+        pol(None, "late-permit", 50, PolicyAction.PERMIT, [{"type": "always"}], vlan=50),
+        pol(None, "early-deny", 5, PolicyAction.DENY, STAFF),
+        pol(None, "disabled", 1, PolicyAction.PERMIT, [{"type": "always"}], vlan=1, enabled=False),
+    ])
+    await db.commit()
+    assert not (await evaluate(db, ctx())).accepted
+    assert (await evaluate(db, ctx(group="ops"))).vlan == 50
 
-    async def test_multi_condition_and_logic(self, db: AsyncSession):
-        """All conditions within a rule must match (AND)."""
-        p = Policy(
-            name="mac-and-group",
-            priority=1,
-            conditions=json.dumps([
-                {"type": "group", "op": "in", "value": ["devs"]},
-                {"type": "mac", "op": "startswith", "value": "aa:bb:cc"},
-            ]),
-            action=PolicyAction.PERMIT,
-            enabled=True,
-        )
-        db.add(p)
-        await db.commit()
 
-        engine = PolicyEngine()
-
-        # Both match → PERMIT
-        ctx = AuthContext(group_name="devs", mac_address="aa:bb:cc:dd:ee:ff")
-        assert (await engine.evaluate(ctx, db)).action == PolicyAction.PERMIT
-
-        # Group doesn't match → default deny
-        ctx2 = AuthContext(group_name="other", mac_address="aa:bb:cc:dd:ee:ff")
-        assert (await engine.evaluate(ctx2, db)).action == PolicyAction.DENY
+async def test_evaluate_fails_closed_on_a_corrupt_policy(db):
+    db.add_all([
+        pol(None, "permit-all", 1, PolicyAction.PERMIT, [{"type": "always"}], vlan=10),
+        pol(None, "corrupt", 2, PolicyAction.DENY, [{"type": "nonsense"}]),
+    ])
+    await db.commit()
+    d = await evaluate(db, ctx())
+    assert not d.accepted
+    assert d.reason == "policy configuration error"

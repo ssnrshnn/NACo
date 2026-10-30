@@ -1,199 +1,129 @@
-"""
-Prometheus-compatible /metrics exporter
-=======================================
-Subscribes to the EventBus and maintains in-memory counters/gauges.
-Exposes metrics in Prometheus text exposition format — no external
-dependency required.
-"""
+"""A tiny Prometheus text-format registry (no client library needed)."""
 from __future__ import annotations
 
-import asyncio
-import threading
-import time
-
-from naco.core.events import Event, EventBus, EventType
+from collections.abc import Sequence
 
 
-class _Counter:
-    """Thread-safe monotonic counter with optional labels."""
+def _escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
 
+
+def _labels(names: Sequence[str], values: Sequence[str], extra: str = "") -> str:
+    parts = [f'{n}="{_escape(v)}"' for n, v in zip(names, values, strict=True)]
+    if extra:
+        parts.append(extra)
+    return "{" + ",".join(parts) + "}" if parts else ""
+
+
+class _Metric:
+    kind = ""
+
+    def __init__(self, name: str, help_: str, labelnames: Sequence[str] = ()) -> None:
+        self.name, self.help, self.labelnames = name, help_, tuple(labelnames)
+
+    def _key(self, labels: dict[str, str]) -> tuple[str, ...]:
+        if set(labels) != set(self.labelnames):
+            raise ValueError(f"{self.name}: expected labels {self.labelnames}, got {tuple(labels)}")
+        return tuple(str(labels[n]) for n in self.labelnames)
+
+    def header(self) -> list[str]:
+        return [f"# HELP {self.name} {self.help}", f"# TYPE {self.name} {self.kind}"]
+
+    def render(self) -> list[str]:
+        raise NotImplementedError
+
+
+class Counter(_Metric):
+    kind = "counter"
+
+    def __init__(self, name: str, help_: str, labelnames: Sequence[str] = ()) -> None:
+        super().__init__(name, help_, labelnames)
+        self._values: dict[tuple[str, ...], float] = {}
+
+    def inc(self, amount: float = 1.0, **labels: str) -> None:
+        key = self._key(labels)
+        self._values[key] = self._values.get(key, 0.0) + amount
+
+    def value(self, **labels: str) -> float:
+        return self._values.get(self._key(labels), 0.0)
+
+    def render(self) -> list[str]:
+        return [f"{self.name}{_labels(self.labelnames, k)} {v:g}" for k, v in sorted(self._values.items())]
+
+
+class Gauge(_Metric):
+    kind = "gauge"
+
+    def __init__(self, name: str, help_: str, labelnames: Sequence[str] = ()) -> None:
+        super().__init__(name, help_, labelnames)
+        self._values: dict[tuple[str, ...], float] = {}
+
+    def set(self, value: float, **labels: str) -> None:
+        self._values[self._key(labels)] = value
+
+    def value(self, **labels: str) -> float:
+        return self._values.get(self._key(labels), 0.0)
+
+    def render(self) -> list[str]:
+        return [f"{self.name}{_labels(self.labelnames, k)} {v:g}" for k, v in sorted(self._values.items())]
+
+
+class Histogram(_Metric):
+    kind = "histogram"
+    DEFAULT_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+
+    def __init__(self, name: str, help_: str, labelnames: Sequence[str] = (),
+                 buckets: Sequence[float] = DEFAULT_BUCKETS) -> None:
+        super().__init__(name, help_, labelnames)
+        self.buckets = tuple(sorted(buckets))
+        self._data: dict[tuple[str, ...], tuple[list[int], float, int]] = {}
+
+    def observe(self, value: float, **labels: str) -> None:
+        key = self._key(labels)
+        counts, total, n = self._data.get(key, ([0] * len(self.buckets), 0.0, 0))
+        for i, bound in enumerate(self.buckets):
+            if value <= bound:
+                counts[i] += 1
+        self._data[key] = (counts, total + value, n + 1)
+
+    def render(self) -> list[str]:
+        out = []
+        for key, (counts, total, n) in sorted(self._data.items()):
+            for bound, c in zip(self.buckets, counts, strict=True):
+                le = f'le="{bound:g}"'
+                out.append(f"{self.name}_bucket{_labels(self.labelnames, key, le)} {c}")
+            inf = 'le="+Inf"'
+            out.append(f"{self.name}_bucket{_labels(self.labelnames, key, inf)} {n}")
+            out.append(f"{self.name}_sum{_labels(self.labelnames, key)} {total:g}")
+            out.append(f"{self.name}_count{_labels(self.labelnames, key)} {n}")
+        return out
+
+
+class Registry:
     def __init__(self) -> None:
-        self._values: dict[tuple[tuple[str, str], ...], float] = {}
-        self._lock = threading.Lock()
+        self._metrics: dict[str, _Metric] = {}
 
-    def inc(self, labels: dict[str, str] | None = None, amount: float = 1) -> None:
-        key = tuple(sorted(labels.items())) if labels else ()
-        with self._lock:
-            self._values[key] = self._values.get(key, 0) + amount
+    def _add(self, metric: _Metric) -> _Metric:
+        if metric.name in self._metrics:
+            raise ValueError(f"metric {metric.name} already registered")
+        self._metrics[metric.name] = metric
+        return metric
 
-    def collect(self) -> dict[tuple[tuple[str, str], ...], float]:
-        with self._lock:
-            return dict(self._values)
+    def counter(self, name: str, help_: str, labelnames: Sequence[str] = ()) -> Counter:
+        return self._add(Counter(name, help_, labelnames))  # type: ignore[return-value]
 
+    def gauge(self, name: str, help_: str, labelnames: Sequence[str] = ()) -> Gauge:
+        return self._add(Gauge(name, help_, labelnames))  # type: ignore[return-value]
 
-class _Gauge:
-    """Thread-safe gauge (set/inc/dec)."""
+    def histogram(self, name: str, help_: str, labelnames: Sequence[str] = (),
+                  buckets: Sequence[float] = Histogram.DEFAULT_BUCKETS) -> Histogram:
+        return self._add(Histogram(name, help_, labelnames, buckets))  # type: ignore[return-value]
 
-    def __init__(self) -> None:
-        self._value: float = 0
-        self._lock = threading.Lock()
-
-    def set(self, value: float) -> None:
-        with self._lock:
-            self._value = value
-
-    def inc(self, amount: float = 1) -> None:
-        with self._lock:
-            self._value += amount
-
-    def dec(self, amount: float = 1) -> None:
-        with self._lock:
-            self._value -= amount
-
-    def get(self) -> float:
-        with self._lock:
-            return self._value
+    def render(self) -> str:
+        lines: list[str] = []
+        for metric in self._metrics.values():
+            lines += metric.header() + metric.render()
+        return "\n".join(lines) + "\n"
 
 
-# ── Metric instances ──────────────────────────────────────────────────────────
-
-auth_total = _Counter()           # labels: result=success|failure
-radius_requests = _Counter()      # labels: type=auth|acct
-tacacs_requests = _Counter()      # labels: type=auth|authz|acct
-new_devices = _Counter()          # no labels
-disabled_blocked = _Counter()     # labels: entity=user|admin|nas|policy
-active_sessions = _Gauge()        # set from DB periodically
-uptime_gauge = _Gauge()           # seconds since start
-
-_start_time: float = time.monotonic()
-
-
-# ── Event handler ─────────────────────────────────────────────────────────────
-
-def _handle_event(event: Event) -> None:
-    match event.type:
-        case EventType.AUTH_SUCCESS:
-            auth_total.inc({"result": "success"})
-            radius_requests.inc({"type": "auth"})
-        case EventType.AUTH_FAILURE:
-            auth_total.inc({"result": "failure"})
-            radius_requests.inc({"type": "auth"})
-        case EventType.SESSION_START:
-            active_sessions.inc()
-        case EventType.SESSION_STOP:
-            if active_sessions.get() > 0:
-                active_sessions.dec()
-        case EventType.NEW_DEVICE:
-            new_devices.inc()
-        case EventType.TACACS_AUTH:
-            tacacs_requests.inc({"type": "auth"})
-        case EventType.TACACS_AUTHZ:
-            tacacs_requests.inc({"type": "authz"})
-        case EventType.TACACS_ACCT:
-            tacacs_requests.inc({"type": "acct"})
-        case EventType.DISABLED_BLOCKED:
-            entity = (event.data or {}).get("entity", "unknown")
-            disabled_blocked.inc({"entity": entity})
-
-
-# ── Background subscriber ────────────────────────────────────────────────────
-
-async def run_metrics_collector(event_bus: EventBus) -> None:
-    """Long-lived task: subscribe to EventBus and update counters."""
-    global _start_time
-    _start_time = time.monotonic()
-
-    queue = await event_bus.subscribe()
-    try:
-        while True:
-            event = await queue.get()
-            _handle_event(event)
-    except asyncio.CancelledError:
-        await event_bus.unsubscribe(queue)
-
-
-# ── Prometheus text format renderer ──────────────────────────────────────────
-
-def _render_counter(name: str, help_text: str, counter: _Counter) -> str:
-    lines = [f"# HELP {name} {help_text}", f"# TYPE {name} counter"]
-    for labels, value in counter.collect().items():
-        if labels:
-            lbls = ",".join(f'{k}="{v}"' for k, v in labels)
-            lines.append(f"{name}{{{lbls}}} {value}")
-        else:
-            lines.append(f"{name} {value}")
-    # Ensure at least one sample line if counter was never incremented
-    if not counter.collect():
-        lines.append(f"{name} 0")
-    return "\n".join(lines)
-
-
-def _render_gauge(name: str, help_text: str, gauge: _Gauge) -> str:
-    return "\n".join([
-        f"# HELP {name} {help_text}",
-        f"# TYPE {name} gauge",
-        f"{name} {gauge.get()}",
-    ])
-
-
-def _render_build_info() -> str:
-    """Identity gauge (value always 1) carrying version + node name as labels.
-
-    With multiple replicas, Prometheus scrapes each independently; this lets
-    dashboards group/join by node and track the running version per replica
-    without polluting the operational metrics with a node label.
-    """
-    from naco import __version__
-    from naco.config import get_config
-
-    node = get_config().server.name.replace('"', "")
-    return "\n".join([
-        "# HELP naco_build_info NACo build/runtime identity (value is always 1)",
-        "# TYPE naco_build_info gauge",
-        f'naco_build_info{{version="{__version__}",node="{node}"}} 1',
-    ])
-
-
-def render_metrics() -> str:
-    """Return all metrics in Prometheus text exposition format."""
-    uptime_gauge.set(time.monotonic() - _start_time)
-
-    sections = [
-        _render_build_info(),
-        _render_counter(
-            "naco_auth_total",
-            "Total authentication attempts",
-            auth_total,
-        ),
-        _render_counter(
-            "naco_radius_requests_total",
-            "Total RADIUS requests by type",
-            radius_requests,
-        ),
-        _render_counter(
-            "naco_tacacs_requests_total",
-            "Total TACACS+ requests by type",
-            tacacs_requests,
-        ),
-        _render_counter(
-            "naco_new_devices_total",
-            "Total new devices discovered",
-            new_devices,
-        ),
-        _render_counter(
-            "naco_disabled_blocked_total",
-            "Auth attempts blocked because entity was disabled",
-            disabled_blocked,
-        ),
-        _render_gauge(
-            "naco_active_sessions",
-            "Current number of active sessions",
-            active_sessions,
-        ),
-        _render_gauge(
-            "naco_uptime_seconds",
-            "Seconds since NACo started",
-            uptime_gauge,
-        ),
-    ]
-    return "\n\n".join(sections) + "\n"
+REGISTRY = Registry()
