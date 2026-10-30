@@ -13,6 +13,9 @@
 	# The http:// block below decides what plain HTTP does (the portal must
 	# stay on HTTP), so Caddy's blanket HTTP→HTTPS redirect is off.
 	auto_https disable_redirects
+	# Clients send no SNI to an IP address; Caddy would then look for a
+	# certificate for the container's own address and fail the handshake.
+	default_sni {$NACO_HOST}
 }
 
 {$NACO_HOST} {
