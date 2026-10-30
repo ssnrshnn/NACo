@@ -36,7 +36,7 @@ export default async function (root) {
   }
   async function add() {
     const done = await formSheet({ title: "Add RADIUS client", fields: fields(null), label: "Add", submit: (v) => api("POST", "/nas", v) });
-    if (done) { toast(`Added ${done.name} — FreeRADIUS picks it up within a minute`); table.load(); }
+    if (done) { toast(`Added ${done.name} — now configure the same secret on the device`); table.load(); }
   }
   const extra = [csvExport("nas")];
   if (su) extra.push(csvImport("nas", "name,ip_address,secret,description,coa_port,enabled", () => table.load()), primary("Add client", add));

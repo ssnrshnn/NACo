@@ -25,7 +25,7 @@ export default async function (root) {
       { name: "role", label: "Role", type: "select", options: [["VIEWER", "Viewer"], ["OPERATOR", "Operator"], ["SUPERUSER", "Superuser"]] },
       { name: "expires_days", label: "Expires after (days)", type: "number", min: 1, max: 3650, value: 90 },
     ], values: { role: "VIEWER" }, submit: (v) => api("POST", "/tokens", v) });
-    if (r) { showSecret(`Token ${r.token.name}`, r.secret, "Copy it now — it is never shown again. Use it as: Authorization: Bearer <token>"); table.load(); }
+    if (r) { showSecret(`Token ${r.token.name}`, r.secret, "Copy it now — it is never shown again. Use it as: Authorization: Bearer <token>. The API is described at /api/v1/openapi.json."); table.load(); }
   }
   await table.mount(root, [primary("Create token", add)]);
 }

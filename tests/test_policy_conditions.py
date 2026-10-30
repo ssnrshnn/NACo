@@ -185,6 +185,17 @@ def test_reply_attributes_rejected(raw):
         validate_reply_attributes(raw)
 
 
+def test_reply_attribute_names_checked_against_freeradius_dictionary():
+    assert validate_reply_attributes({"filter-id": "x", "cisco-avpair": ["a=b"]}, known_names=True) == {
+        "Filter-Id": "x", "Cisco-AVPair": ["a=b"]}
+    with pytest.raises(ValueError, match="did you mean Aruba-User-Role"):
+        validate_reply_attributes({"Aruba-Users-Role": "x"}, known_names=True)
+    with pytest.raises(ValueError, match="not a RADIUS attribute"):
+        validate_reply_attributes({"Totally-Made-Up": "x"}, known_names=True)
+    # Stored policies are only checked structurally: a dictionary change never breaks them.
+    assert validate_reply_attributes({"Totally-Made-Up": "x"}) == {"Totally-Made-Up": "x"}
+
+
 def test_decision_digest_tracks_what_the_nas_sees():
     a = Decision(PolicyAction.PERMIT, 1, "p", "ok", vlan=10, reply_attributes={"Filter-Id": "x"})
     b = Decision(PolicyAction.PERMIT, 2, "other name", "other reason", vlan=10, reply_attributes={"Filter-Id": "x"})

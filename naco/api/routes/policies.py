@@ -50,7 +50,7 @@ def _conditions(v: Any) -> list[dict[str, Any]]:
 
 
 def _attributes(v: Any) -> dict[str, Any]:
-    return validate_reply_attributes(v)
+    return validate_reply_attributes(v, known_names=True)
 
 
 class PolicyIn(BaseModel):

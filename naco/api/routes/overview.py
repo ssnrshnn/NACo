@@ -1,4 +1,5 @@
-"""Dashboard numbers, system status and the live event stream (SSE)."""
+"""Dashboard numbers, system status, the live event stream (SSE) and the
+OpenAPI description of the API."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -136,6 +137,12 @@ class SystemStatus(BaseModel):
     radius: str
     radius_last_request: datetime | None
     settings: dict[str, Any]
+
+
+@router.get("/openapi.json", include_in_schema=False)
+async def openapi(request: Request, _: Principal = Depends(viewer)) -> JSONResponse:
+    """The API description, for signed-in administrators and API tokens only."""
+    return JSONResponse(request.app.openapi())
 
 
 @router.get("/system", response_model=SystemStatus)

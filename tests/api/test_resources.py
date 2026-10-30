@@ -166,6 +166,7 @@ async def test_bulk_device_status(api, tokens, scheduled):
     ({"action": "DENY", "vlan": 10}, "DENY"),
     ({"reply_attributes": {"control:Auth-Type": "Accept"}}, "attribute"),
     ({"reply_attributes": {"Filter-Id": "%{User-Name}"}}, "expansions"),
+    ({"reply_attributes": {"Filter-ID-X": "acl"}}, "did you mean Filter-Id"),
     ({"vlan": 4095}, "4094"),
 ])
 async def test_policy_validation(api, tokens, payload, fragment):

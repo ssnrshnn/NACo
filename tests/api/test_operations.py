@@ -256,3 +256,15 @@ async def test_live_events_stream(app_db):
     finally:
         server.should_exit = True
         await task
+
+
+
+# ── API description ────────────────────────────────────────────────────────
+
+async def test_openapi_document_needs_a_principal(api, tokens):
+    assert (await api.get(f"{V1}/openapi.json")).status_code == 401
+    r = await api.get(f"{V1}/openapi.json", headers=tokens[AdminRole.VIEWER])
+    assert r.status_code == 200
+    paths = r.json()["paths"]
+    assert f"{V1}/policies" in paths and f"{V1}/auth/login" in paths
+    assert not any(p.startswith(("/portal", "/login", "/static", f"{V1}/openapi")) for p in paths)

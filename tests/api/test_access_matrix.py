@@ -114,6 +114,7 @@ EXPECTED: dict[tuple[str, str], tuple[AdminRole, str | None]] = {
     ("POST", "/api/v1/import/nas"): (S, None),
     ("GET", "/api/v1/dashboard"): (V, None),
     ("GET", "/api/v1/system"): (V, None),
+    ("GET", "/api/v1/openapi.json"): (V, None),
     ("GET", "/api/v1/events"): (V, None),
 }
 
