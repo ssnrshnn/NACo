@@ -297,6 +297,7 @@ def lock_probe(monkeypatch):
     """Wrap bcrypt so each call first checks that SQLite's write lock is free:
     a transaction held across bcrypt would stall every RADIUS decision."""
     import sqlite3
+    import threading
 
     from naco.api.routes import auth as auth_routes
     from naco.core import passwords
@@ -304,18 +305,20 @@ def lock_probe(monkeypatch):
 
     path = get_engine().url.database
     probe = type("Probe", (), {"calls": 0, "locked": []})()
+    one_at_a_time = threading.Lock()  # concurrent bcrypt calls must not see each other's probe
 
     def checked(fn, name):
         def wrapper(*args):
-            probe.calls += 1
-            conn = sqlite3.connect(path, timeout=0)
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.rollback()
-            except sqlite3.OperationalError:
-                probe.locked.append(name)
-            finally:
-                conn.close()
+            with one_at_a_time:
+                probe.calls += 1
+                conn = sqlite3.connect(path, timeout=0)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.rollback()
+                except sqlite3.OperationalError:
+                    probe.locked.append(name)
+                finally:
+                    conn.close()
             return fn(*args)
         return wrapper
 
