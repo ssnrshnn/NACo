@@ -5,14 +5,15 @@ import ipaddress
 import re
 from collections.abc import Iterable
 
-# Every way network devices write a MAC address (any case).
+# Every way network devices write a MAC address, in any case: twelve hex
+# digits in groups of 2, 4 or 6 with one separator throughout, or none —
+# aa:bb:…, aa-bb-…, aa.bb.… (Ruckus ICX), aabb.ccdd.eeff (Cisco),
+# aabb-ccdd-eeff (Huawei, H3C, Comware), aabbcc-ddeeff (ArubaOS-Switch),
+# AABB:CCDD:EEFF and "AA BB CC …" (MikroTik), aabbccddeeff.
 _MAC = (
-    r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}",          # aa:bb:cc:dd:ee:ff
-    r"[0-9a-f]{2}(?:-[0-9a-f]{2}){5}",          # aa-bb-cc-dd-ee-ff
-    r"[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}",   # aabb.ccdd.eeff (Cisco)
-    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}",     # aabb-ccdd-eeff (Huawei, H3C, HPE Comware)
-    r"[0-9a-f]{6}-[0-9a-f]{6}",                 # aabbcc-ddeeff (ArubaOS-Switch)
-    r"[0-9a-f]{12}",                            # aabbccddeeff
+    *(rf"[0-9a-f]{{{n}}}(?:{re.escape(sep)}[0-9a-f]{{{n}}}){{{12 // n - 1}}}"
+      for sep in ":-. " for n in (2, 4, 6)),
+    r"[0-9a-f]{12}",
 )
 _MAC_FORMS = tuple(re.compile(rf"^{form}$", re.I) for form in _MAC)
 _STATION = re.compile(rf"^({'|'.join(_MAC)})(?::(.*))?$", re.I | re.S)

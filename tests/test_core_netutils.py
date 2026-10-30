@@ -8,6 +8,8 @@ from naco.core.netutils import ip_in_any, is_randomized_mac, normalize_mac, pars
     "  aa:bb:cc:dd:ee:ff  ",
     "aabb-ccdd-eeff", "AABB-CCDD-EEFF",  # Huawei, H3C, HPE Comware
     "aabbcc-ddeeff", "AABBCC-DDEEFF",    # ArubaOS-Switch (ProCurve) single-dash
+    "AABB:CCDD:EEFF", "AABBCC:DDEEFF", "AA BB CC DD EE FF",  # MikroTik radius-mac-format
+    "aa.bb.cc.dd.ee.ff",                 # Ruckus ICX
 ])
 def test_normalize_mac_accepts_common_forms(value):
     assert normalize_mac(value) == "aa:bb:cc:dd:ee:ff"
@@ -16,6 +18,7 @@ def test_normalize_mac_accepts_common_forms(value):
 @pytest.mark.parametrize("value", [
     None, "", "alice", "aa:bb:cc:dd:ee", "aa:bb-cc:dd:ee:ff", "aabbccddeeffaa", "gg:bb:cc:dd:ee:ff",
     "aa:bb:cc:dd:ee:ff:00", "aabb.ccdd.eeff.0011", "aabb-ccdd.eeff", "aabbc-cddeeff", "aabb-ccddeeff",
+    "aa:bb:cc:dd:ee-ff", "aabb ccdd-eeff", "aa  bb cc dd ee ff",
 ])
 def test_normalize_mac_rejects_everything_else(value):
     assert normalize_mac(value) is None
