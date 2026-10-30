@@ -2,7 +2,7 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 3.0.1 — 2026-10-30
 
 ### Fixed
 
