@@ -234,8 +234,9 @@ async def test_dashboard_and_system(api, tokens):
     assert "secret" not in str(system).lower()
 
 
-async def test_live_events_stream(app_db):
-    token = await make_token(app_db, AdminRole.VIEWER)
+@pytest.mark.parametrize("role,sees_audit", [(AdminRole.VIEWER, False), (AdminRole.OPERATOR, True)])
+async def test_live_events_stream(app_db, role, sees_audit):
+    token = await make_token(app_db, role)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -250,7 +251,13 @@ async def test_live_events_stream(app_db):
             lines = response.aiter_lines()
             assert await anext(lines) == "retry: 5000"
             await anext(lines)
+            # The audit log is for operators and up — its live feed too.
+            bus.publish(Event(EventType.AUDIT, {"actor": "root", "action": "user.create", "target": "x"}))
             bus.publish(Event(EventType.AUTH, {"result": "ACCEPT", "username": "alice"}))
+            if sees_audit:
+                assert await anext(lines) == "event: audit"
+                await anext(lines)
+                await anext(lines)
             assert await anext(lines) == "event: auth"
             assert '"username": "alice"' in await anext(lines)
     finally:

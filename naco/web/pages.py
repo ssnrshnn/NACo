@@ -1,6 +1,7 @@
 """Admin pages: server-rendered shells; data and every change go through /api/v1."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from importlib import resources
 from typing import Any
@@ -87,9 +88,14 @@ async def _principal(request: Request, db: AsyncSession) -> Principal | None:
     return principal
 
 
+_SAFE_PATH = re.compile(r"/(?![/\\])[\x21-\x7e]*")
+
+
 def _safe_next(target: str | None) -> str:
-    """Only same-site paths — never //host or scheme://."""
-    if not target or not target.startswith("/") or target.startswith("//") or "\\" in target:
+    """Only same-site paths — never //host or scheme://. Browsers drop tabs and
+    line breaks from URLs (slash, tab, slash becomes "//"), so only printable
+    ASCII without spaces or backslashes is accepted."""
+    if not target or not _SAFE_PATH.fullmatch(target) or "\\" in target:
         return "/"
     return target
 

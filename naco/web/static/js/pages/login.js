@@ -1,5 +1,15 @@
 import { api } from "/static/js/app.js";
 
+// The server already vets ?next=; resolving it here as the browser will is
+// the last word on staying on this site.
+function sameOrigin(next) {
+  try {
+    const url = new URL(next || "/", location.origin);
+    if (url.origin === location.origin) return url.pathname + url.search + url.hash;
+  } catch { /* fall through */ }
+  return "/";
+}
+
 export default function () {
   const form = document.getElementById("login-form");
   const error = document.getElementById("login-error");
@@ -12,7 +22,7 @@ export default function () {
       const me = await api("POST", "/auth/login", {
         username: form.username.value.trim(), password: form.password.value, totp_code: form.totp_code.value.trim(),
       });
-      location.href = me.restricted ? "/setup" : form.dataset.next || "/";
+      location.href = me.restricted ? "/setup" : sameOrigin(form.dataset.next);
     } catch (err) {
       error.textContent = err.message;
       error.classList.remove("hidden");

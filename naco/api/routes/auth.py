@@ -125,7 +125,10 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
 
     if not ok or admin is None:
         _per_user.failure(name)
-        row = write(db, actor=name or "-", actor_type=ActorType.ADMIN, ip=ip, action="auth.login_failed")
+        # A name that is no account is not recorded: it is often a password
+        # typed into the wrong field.
+        row = write(db, actor=name if admin is not None else "(unknown)", actor_type=ActorType.ADMIN, ip=ip,
+                    action="auth.login_failed")
         await db.commit()
         announce(row)
         # One message for every failure: never reveal which factor was wrong.

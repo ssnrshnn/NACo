@@ -21,10 +21,11 @@ from naco.api.deps import Principal, viewer
 from naco.api.routes.admin import AuthLogOut
 from naco.config import get_config
 from naco.core import runtime
-from naco.core.events import bus
+from naco.core.events import EventType, bus
 from naco.core.timeutil import utcnow
 from naco.db.engine import get_db, session_factory
 from naco.db.models import (
+    AdminRole,
     AdminSession,
     AdminUser,
     ApiToken,
@@ -179,13 +180,17 @@ async def _still_valid(principal: Principal) -> bool:
             return row is not None
         if principal.token_id is not None:
             token = await db.get(ApiToken, principal.token_id)
-            return token is not None and token.revoked_at is None
+            return token is not None and token.revoked_at is None and (
+                token.expires_at is None or token.expires_at > utcnow())
     return False
 
 
 @router.get("/events")
 async def events(request: Request, principal: Principal = Depends(viewer)) -> StreamingResponse:
-    """Server-Sent Events: auth decisions, accounting, devices, audit."""
+    """Server-Sent Events: auth decisions, accounting, devices — and audit
+    records for those who may read the audit log (operator and up)."""
+    sees_audit = principal.role.allows(AdminRole.OPERATOR)
+
     async def stream() -> AsyncIterator[str]:
         async with bus.subscribe() as queue:
             yield "retry: 5000\n\n"
@@ -199,6 +204,8 @@ async def events(request: Request, principal: Principal = Depends(viewer)) -> St
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
                     yield ": keep-alive\n\n"
+                    continue
+                if event.type is EventType.AUDIT and not sees_audit:
                     continue
                 payload = json.dumps({**event.data, "ts": event.ts.isoformat()}, default=str)
                 yield f"event: {event.type.value}\ndata: {payload}\n\n"

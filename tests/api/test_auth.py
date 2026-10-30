@@ -256,6 +256,28 @@ async def test_health_is_public_and_quiet(api):
     assert TOTP_SECRET
 
 
+async def test_failed_sign_in_records_only_real_account_names(api):
+    await make_admin(api.sf)
+    await api.post(LOGIN, json={"username": "Summer2026!secret", "password": "x"})
+    await api.post(LOGIN, json={"username": "root", "password": "wrong"})
+    async with api.sf() as db:
+        actors = list((await db.execute(select(AuditLog.actor).where(AuditLog.action == "auth.login_failed")
+                                        .order_by(AuditLog.id))).scalars())
+    assert actors == ["(unknown)", "root"]
+
+
+async def test_stream_ends_when_its_token_expires(api):
+    from naco.api.deps import Principal
+    from naco.api.routes.overview import _still_valid
+    async with api.sf() as db:
+        token = ApiToken(name="t", token_hash="h" * 64, prefix="naco_x", role=AdminRole.VIEWER,
+                         expires_at=utcnow() - timedelta(minutes=1))
+        db.add(token)
+        await db.commit()
+    principal = Principal(kind="token", username="t", role=AdminRole.VIEWER, token_id=token.id)
+    assert not await _still_valid(principal)
+
+
 # ── bcrypt never runs under the database write lock ─────────────────────────
 
 @pytest.fixture

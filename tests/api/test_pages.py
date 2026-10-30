@@ -15,13 +15,20 @@ async def test_pages_redirect_to_login_when_signed_out(api, path):
 
 
 @pytest.mark.parametrize("target,expected", [
-    ("/devices", "/devices"), ("//evil.example", "/"), ("https://evil.example", "/"), ("/\\evil", "/"), ("", "/"),
+    ("/devices", "/devices"), ("/devices?status=PENDING", "/devices?status=PENDING"),
+    ("//evil.example", "/"), ("https://evil.example", "/"), ("/\\evil", "/"), ("", "/"),
+    ("/\t/evil.example", "/"), ("/\n/evil.example", "/"), ("/\r/evil.example", "/"), ("/ /evil.example", "/"),
 ])
 async def test_login_next_is_never_an_open_redirect(api, target, expected):
     await make_admin(api.sf)
     await sign_in(api)
     r = await api.get("/login", params={"next": target})
     assert r.status_code == 303 and r.headers["location"] == expected
+
+
+async def test_login_page_carries_only_a_safe_next(api):
+    r = await api.get("/login", params={"next": "/\t/evil.example/phish"})
+    assert r.status_code == 200 and 'data-next="/"' in r.text
 
 
 async def test_unfinished_setup_is_forced(api):
