@@ -58,8 +58,9 @@ usual hardening headers are always sent.
 | `.env`, the EAP CA key | files readable only by their owner; never inside an image |
 
 Backups contain the hashes and the encrypted secrets; they are useless for
-the secrets without the master key, but treat them as confidential (or use
-`--age-recipient`). `nacoctl rotate-master-key` replaces the master key.
+the secrets without the master key, but treat them as confidential (or
+encrypt them with age, see [operations](operations.md#backups)).
+`nacoctl rotate-master-key` replaces the master key.
 
 ## RADIUS and EAP
 

@@ -22,7 +22,7 @@ in a few minutes.
 | **Guest portal** | Central web authentication: guests accept the terms (optionally with an access code) and are moved to the guest policy |
 | **TACACS+** | Device administration for switch logins (RFC 8907): privilege levels and per-command authorization by group, full accounting |
 | **Admin panel** | Fast, keyboard-friendly, live (dashboard, sessions and logs update by themselves), light and dark, works on a phone; mandatory two-factor sign-in; roles *viewer*, *operator*, *superuser*; API tokens; complete audit log |
-| **Operations** | One-command install, online backups (optionally age-encrypted), master-key rotation, CSV import/export, syslog, Prometheus metrics |
+| **Operations** | One-command install, online backups (age-encryptable), master-key rotation, CSV import/export, syslog, Prometheus metrics |
 
 ## How it fits together
 

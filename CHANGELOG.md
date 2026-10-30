@@ -37,9 +37,9 @@ users, devices and switches over with CSV import.
   no third-party code; mandatory TOTP with recovery codes; audit log page;
   API tokens with roles; CSV import/export.
 - Reply attribute names are checked against FreeRADIUS' dictionaries.
-- `nacoctl`: config check, password/2FA reset, online and age-encrypted
-  backups (also through stdin/stdout), restore with integrity check, master
-  key rotation.
+- `nacoctl`: config check, password/2FA reset, online backups through
+  stdin/stdout (encrypt them with age on the host), restore with integrity
+  check, master key rotation.
 - Released images are multi-arch, scanned, signed with cosign and shipped
   with SBOM and provenance; CI runs end-to-end tests against real
   FreeRADIUS, RADIUS and EAP clients and the panel in a browser.

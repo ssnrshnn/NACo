@@ -28,8 +28,8 @@ docker compose exec naco nacoctl --help
 | `check-config` | validate `config.yaml` and the secrets |
 | `reset-password <admin>` | new temporary password for an administrator (printed once) |
 | `reset-totp <admin>` | remove an administrator's two-factor setup (lost phone) |
-| `backup [-o FILE\|-] [--age-recipient KEY]` | online backup of the database |
-| `restore FILE\|- --yes [--age-identity FILE]` | replace the database with a backup |
+| `backup [-o FILE\|-]` | online backup of the database |
+| `restore FILE\|- --yes` | replace the database with a backup |
 | `rotate-master-key --new-key-file FILE\|-` | re-encrypt stored secrets with a new master key |
 
 `-` means standard output or input, so files move between the host and the
@@ -45,26 +45,22 @@ docker compose exec naco nacoctl backup
 ```
 
 The backup is consistent while NACo runs. It holds password hashes and
-encrypted secrets, so treat it as confidential — or encrypt it for an
-[age](https://age-encryption.org) key, whose private half stays elsewhere:
+encrypted secrets, so treat it as confidential. Straight to a file on the
+host — encrypted on the way for an [age](https://age-encryption.org) key
+whose private half stays elsewhere (`apt install age` on the host):
 
 ```bash
-docker compose exec naco nacoctl backup --age-recipient age1q…
+docker compose exec -T naco nacoctl backup -o - | age -r age1q… > naco-$(date +%F).db.age
 ```
 
-Straight to a file on the host (or pipe it anywhere):
-
-```bash
-docker compose exec -T naco nacoctl backup -o - --age-recipient age1q… > naco-$(date +%F).db.age
-```
-
-Nightly, keeping two weeks in the volume (crontab of a user in the `docker` group):
+Nightly, keeping two weeks (crontab of a user in the `docker` group; `%` must
+be escaped in crontab):
 
 ```cron
-0 2 * * *  cd /opt/NACo && docker compose exec -T naco nacoctl backup --age-recipient age1q… >/dev/null && docker compose exec -T naco sh -c 'ls -t /backups/naco-* | tail -n +15 | xargs -r rm --'
+0 2 * * *  cd /opt/NACo && docker compose exec -T naco nacoctl backup -o - | age -r age1q… > /var/backups/naco/naco-$(date +\%F).db.age && find /var/backups/naco -name 'naco-*.db.age' -mtime +14 -delete
 ```
 
-Copy backups off the host (`docker compose cp naco:/backups/<file> .`).
+Copy backups off the host as well.
 A restore also needs **`.env`** (the master key) and, for EAP, **`secrets/ca/`**
 and **`deploy/freeradius/certs/`** — back those up once, separately and
 securely.

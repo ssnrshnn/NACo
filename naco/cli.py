@@ -15,7 +15,6 @@ import os
 import secrets
 import shutil
 import sqlite3
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Coroutine
@@ -150,62 +149,46 @@ def _sqlite_copy(source: str, target: Path) -> None:
     os.chmod(target, 0o600)
 
 
-def _age() -> str:
-    path = shutil.which("age")
-    if path is None:
-        _fail("the `age` tool is not installed")
-    return str(path)
-
-
 # Every age file starts with one of these (binary or ASCII-armored).
 AGE_MAGIC = (b"age-encryption.org/", b"-----BEGIN AGE ENCRYPTED FILE-----")
 
 
 @cli.command()
 @click.option("--output", "-o", type=click.Path(dir_okay=False, allow_dash=True, path_type=Path),
-              help="File, or - for standard output. Default: /backups/naco-<timestamp>.db[.age]")
-@click.option("--age-recipient", "recipient", help="Encrypt for this age public key (age1…).")
-def backup(output: Path | None, recipient: str | None) -> None:
+              help="File, or - for standard output. Default: /backups/naco-<timestamp>.db")
+def backup(output: Path | None) -> None:
     """Back up the database (safe while NACo runs).
 
     \b
     docker compose exec naco nacoctl backup
     docker compose exec -T naco nacoctl backup -o - > naco.db
+    docker compose exec -T naco nacoctl backup -o - | age -r age1… > naco.db.age
     """
     cfg = get_config()
     if not Path(cfg.database.path).exists():
         _fail(f"no database at {cfg.database.path}")
     to_stdout = output is not None and str(output) == "-"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = output or Path("/backups") / f"naco-{stamp}.db{'.age' if recipient else ''}"
+    target = output or Path("/backups") / f"naco-{stamp}.db"
     if not to_stdout:
         target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
-        work = Path(tmp)
-        plain = work / "naco.db" if (recipient or to_stdout) else target
+        plain = Path(tmp) / "naco.db" if to_stdout else target
         _sqlite_copy(cfg.database.path, plain)
-        result = plain
-        if recipient:
-            result = work / "naco.db.age" if to_stdout else target
-            subprocess.run([_age(), "-r", recipient, "-o", str(result), str(plain)], check=True)  # noqa: S603
-            os.chmod(result, 0o600)
         if to_stdout:
             stream = sys.stdout.buffer
-            with open(result, "rb") as handle:
+            with open(plain, "rb") as handle:
                 shutil.copyfileobj(handle, stream)
             stream.flush()
     click.echo(f"Backup written to {'standard output' if to_stdout else target}", err=to_stdout)
-    if not recipient:
-        click.secho("It contains encrypted secrets and password hashes — keep it private, "
-                    "and remember it needs the same NACO_MASTER_KEY.", fg="yellow", err=to_stdout)
+    click.secho("It contains encrypted secrets and password hashes — keep it private, "
+                "and remember it needs the same NACO_MASTER_KEY.", fg="yellow", err=to_stdout)
 
 
 @cli.command()
 @click.argument("source", type=click.Path(exists=True, dir_okay=False, allow_dash=True, path_type=Path))
-@click.option("--age-identity", "identity", type=click.Path(exists=True, dir_okay=False),
-              help="age private key file, for encrypted backups.")
 @click.option("--yes", is_flag=True, help="Confirm overwriting the current database.")
-def restore(source: Path, identity: str | None, yes: bool) -> None:
+def restore(source: Path, yes: bool) -> None:
     """Replace the database with a backup — a file, or - for standard input.
     Stop NACo first:
 
@@ -225,13 +208,10 @@ def restore(source: Path, identity: str | None, yes: bool) -> None:
         else:
             shutil.copyfile(source, received)
         with open(received, "rb") as handle:
-            encrypted = handle.read(64).startswith(AGE_MAGIC)
-        if encrypted:
-            if identity is None:
-                _fail("this backup is encrypted — pass --age-identity, or decrypt it with age first")
-            subprocess.run([_age(), "-d", "-i", str(identity), "-o", str(plain), str(received)], check=True)  # noqa: S603
-        else:
-            received.rename(plain)
+            if handle.read(64).startswith(AGE_MAGIC):
+                _fail("this backup is encrypted — decrypt it on the way in: "
+                      "age -d -i key.txt FILE | docker compose run --rm -T naco nacoctl restore - --yes")
+        received.rename(plain)
         conn = sqlite3.connect(plain)
         try:
             ok = conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
