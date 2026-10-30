@@ -2,6 +2,16 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+### Fixed
+
+- HTTPS failed when `NACO_HOST` is an IP address: browsers send no SNI to an
+  IP, and Caddy looked for a certificate for its container's own address.
+- `quickstart.sh` takes `NACO_IMAGE` and `NACO_RADIUS_IMAGE` from the
+  environment on a first install, so released images need no hand-written
+  `.env`.
+
 ## 3.0.0 — 2026-10-30
 
 NACo 3 is a rewrite for one job — network access control on a single host
