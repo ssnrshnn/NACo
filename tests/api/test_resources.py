@@ -112,6 +112,21 @@ async def test_groups_need_superuser_and_protect_policies(api, tokens, scheduled
                             json={"description": "everyone"})).status_code == 200
 
 
+async def test_group_attributes_for_other_vendors(api, tokens):
+    su = tokens[AdminRole.SUPERUSER]
+    lines = ["junos-exec:local-user-name = super-user", "", "fortigate: admin_prof=super_admin"]
+    g = await mkgroup(api, su, "netops", device_admin_privilege=15, device_admin_attributes=lines)
+    assert g["device_admin_attributes"] == ["junos-exec: local-user-name=super-user", "fortigate: admin_prof=super_admin"]
+    for bad in (["junos-exec local-user-name"], ["shell: priv-lvl=15"], ["x: a=b"] * 51):
+        r = await api.patch(f"{V1}/groups/{g['id']}", headers=su, json={"device_admin_attributes": bad})
+        assert r.status_code == 422, bad
+    r = await api.patch(f"{V1}/groups/{g['id']}", headers=su, json={"device_admin_attributes": None})
+    assert r.json()["device_admin_attributes"] == g["device_admin_attributes"]  # null leaves them alone
+    r = await api.patch(f"{V1}/groups/{g['id']}", headers=su, json={"device_admin_attributes": []})
+    assert r.json()["device_admin_attributes"] == []
+    assert (await api.get(f"{V1}/groups", headers=su)).json()[0]["device_admin_attributes"] == []
+
+
 async def test_deleting_a_group_frees_its_members(api, tokens, scheduled):
     su = tokens[AdminRole.SUPERUSER]
     temp = await mkgroup(api, su, "temp")

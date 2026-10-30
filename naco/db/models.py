@@ -222,6 +222,9 @@ class Group(Base):
     # Set → members may log in to network devices over TACACS+ up to this level.
     device_admin_privilege: Mapped[int | None] = mapped_column(Integer)
     command_set_id: Mapped[int | None] = mapped_column(ForeignKey("command_sets.id", ondelete="SET NULL"))
+    # "service: attr=value" lines: what devices asking for another service
+    # than Cisco's shell (junos-exec, fortigate, ppp …) receive.
+    device_admin_attributes: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

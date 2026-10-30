@@ -13,7 +13,12 @@ export default async function (root) {
       options: [["", "None — no switch logins"], ...Array.from({ length: 15 }, (_, i) => [i + 1, `Level ${i + 1}${i === 14 ? " (full)" : ""}`])],
       help: "Members may log in to network devices up to this privilege level." },
     { name: "command_set_id", label: "Command set", type: "select", options: setOptions, nullable: true, numeric: true },
+    { name: "device_admin_attributes", label: "TACACS+ attributes for other vendors", type: "textarea", rows: 3,
+      placeholder: "junos-exec: local-user-name=super-user\nfortigate: admin_prof=super_admin",
+      help: "One 'service: attribute=value' per line, for devices that ask for another service than Cisco's shell (Juniper, Fortinet, Dell OS10 …). A service with no line is refused." },
   ];
+  const lines = (text) => (text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const services = (g) => [...new Set((g.device_admin_attributes || []).map((l) => l.split(":")[0]))];
 
   const table = new TableView({
     search: false,
@@ -21,7 +26,8 @@ export default async function (root) {
       { label: "Group", render: (g) => [h("b", g.name), g.description ? h("div.small.muted", g.description) : null] },
       { label: "Members", render: (g) => g.members.toLocaleString() },
       { label: "Device administration", render: (g) => g.device_admin_privilege
-        ? [pill(`Privilege ${g.device_admin_privilege}`, "accent"), " ", g.command_set_id ? h("span.chip", setName[g.command_set_id]) : h("span.small.muted", "all commands")]
+        ? [pill(`Privilege ${g.device_admin_privilege}`, "accent"), " ", g.command_set_id ? h("span.chip", setName[g.command_set_id]) : h("span.small.muted", "all commands"),
+          ...services(g).map((s) => [" ", h("span.chip.mono", s)])]
         : h("span.faint", "—") },
     ],
     load: () => get("/groups"),
@@ -33,12 +39,15 @@ export default async function (root) {
   });
 
   async function edit(g) {
-    const done = await formSheet({ title: `Edit ${g.name}`, fields, values: { ...g, device_admin_privilege: g.device_admin_privilege ?? "", command_set_id: g.command_set_id ?? "" },
-      submit: (v) => api("PATCH", `/groups/${g.id}`, v) });
+    const done = await formSheet({ title: `Edit ${g.name}`, fields,
+      values: { ...g, device_admin_privilege: g.device_admin_privilege ?? "", command_set_id: g.command_set_id ?? "",
+                device_admin_attributes: (g.device_admin_attributes || []).join("\n") },
+      submit: (v) => api("PATCH", `/groups/${g.id}`, { ...v, device_admin_attributes: lines(v.device_admin_attributes) }) });
     if (done) { toast(`Saved ${g.name}`); table.load(); }
   }
   async function add() {
-    const done = await formSheet({ title: "Add group", fields, label: "Create", submit: (v) => api("POST", "/groups", v) });
+    const done = await formSheet({ title: "Add group", fields, label: "Create",
+      submit: (v) => api("POST", "/groups", { ...v, device_admin_attributes: lines(v.device_admin_attributes) }) });
     if (done) { toast(`Created ${done.name}`); table.load(); }
   }
   await table.mount(root, can("SUPERUSER") ? [primary("Add group", add)] : []);

@@ -42,6 +42,7 @@ class UserInfo:
     group_name: str | None
     device_admin_privilege: int | None
     command_set_id: int | None
+    device_admin_attributes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ async def load_user(db: AsyncSession, username: str) -> tuple[UserInfo, str | No
         group_id=user.group_id, group_name=group.name if group else None,
         device_admin_privilege=group.device_admin_privilege if group else None,
         command_set_id=group.command_set_id if group else None,
+        device_admin_attributes=tuple(group.device_admin_attributes or ()) if group else (),
     )
     return info, user.password_hash
 
