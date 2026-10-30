@@ -14,7 +14,6 @@ Status codes are chosen for rlm_rest:
 from __future__ import annotations
 
 import hmac
-import json
 import logging
 import time
 from collections.abc import Iterator
@@ -25,7 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from naco.aaa import service
-from naco.aaa.rlm import Attrs, reply, vlan_attributes
+from naco.aaa.rlm import Attrs, loads, reply, vlan_attributes
 from naco.config import get_secrets
 from naco.core import runtime
 from naco.core.metrics import REGISTRY
@@ -51,9 +50,7 @@ async def _attrs(request: Request) -> Attrs:
     if len(body) > MAX_BODY:
         raise HTTPException(status_code=413, detail="request too large")
     try:
-        # rlm_rest writes octets attributes (Message-Authenticator,
-        # EAP-Message) as raw bytes, so the body is not always valid UTF-8.
-        return Attrs.parse(json.loads((body or b"{}").decode("utf-8", errors="surrogateescape")))
+        return Attrs.parse(loads(body))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="malformed rlm_rest body") from exc
 

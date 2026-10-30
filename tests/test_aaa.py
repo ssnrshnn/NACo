@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from naco.aaa import service
 from naco.aaa.app import create_internal_app
+from naco.aaa.rlm import loads
 from naco.core.passwords import hash_password_sync
 from naco.core.timeutil import utcnow
 from naco.db.models import (
@@ -418,7 +419,28 @@ async def test_raw_binary_octets_from_rlm_rest_are_tolerated(client):
     assert r.status_code == 204
 
 
-async def test_invalid_utf8_in_a_password_never_authenticates(client):
-    body = b'{"User-Name":{"type":"string","value":["alice"]},"User-Password":{"type":"string","value":["\xff\xfe"]}}'
+async def test_escaped_bytes_from_rlm_rest_on_x86_are_utf8(client):
+    # The same request from FreeRADIUS on x86-64, where char is signed: every
+    # byte from 0x80 up arrives as its own \u00XX escape ("ö" as "Ã¶").
+    body = (b'{"User-Name":{"type":"string","value":["alice"]},'
+            b'"User-Password":{"type":"string","value":["pa\\"ss\\\\w\\u00C3\\u00B6rd"]},'
+            b'"Message-Authenticator":{"type":"octets","value":["\\u00E2\\u00E8j\\u0010\\u00FF"]}}')
     r = await client.post("/aaa/authenticate", content=body)
+    assert r.status_code == 204
+
+
+@pytest.mark.parametrize("password", [b"\xff\xfe", b"\\u00FF\\u00FE"])
+async def test_invalid_utf8_in_a_password_never_authenticates(client, password):
+    body = b'{"User-Name":{"type":"string","value":["alice"]},"User-Password":{"type":"string","value":["%s"]}}'
+    r = await client.post("/aaa/authenticate", content=body % password)
     assert r.status_code == 401
+
+
+@pytest.mark.parametrize("arm64,x86_64", [
+    (b'{"A":["w\xc3\xb6rd"]}', b'{"A":["w\\u00C3\\u00B6rd"]}'),
+    (b'{"A":["\xc5\x9fifre"],"M":["\xff"]}', b'{"A":["\\u00C5\\u009Fifre"],"M":["\\u00FF"]}'),
+    (b'{"A":["tab\\there"]}', b'{"A":["tab\\there"]}'),
+])
+def test_rlm_rest_bodies_read_the_same_on_every_cpu(arm64, x86_64):
+    assert loads(arm64) == loads(x86_64)
+    assert loads(arm64)["A"][0] in ("wörd", "şifre", "tab\there")
