@@ -2,11 +2,14 @@
 
 Status codes are chosen for rlm_rest:
 
-* 200 + attributes → ``updated``, 204 → ``ok``  (accept / done)
-* 401 → ``reject``
+* authenticate: 204 → ``ok``, 401 → ``reject``
+* authorize: 200 with ``control:NACo-Decision`` = ``accept`` (plus VLAN and
+  attributes) or ``reject``; our FreeRADIUS config accepts only on an
+  explicit ``accept``
+* accounting: 204 once the database write succeeded
 * anything else (bad token, malformed body, crash, timeout) → ``fail`` /
-  ``invalid``, which our FreeRADIUS config turns into a reject — and for
-  accounting into *no* Accounting-Response, so the NAS retransmits.
+  ``invalid``, which rejects — and for accounting sends *no*
+  Accounting-Response, so the NAS retransmits.
 """
 from __future__ import annotations
 
@@ -46,8 +49,10 @@ async def _attrs(request: Request) -> Attrs:
     if len(body) > MAX_BODY:
         raise HTTPException(status_code=413, detail="request too large")
     try:
-        return Attrs.parse(json.loads(body or b"{}"))
-    except (ValueError, UnicodeDecodeError) as exc:
+        # rlm_rest writes octets attributes (Message-Authenticator,
+        # EAP-Message) as raw bytes, so the body is not always valid UTF-8.
+        return Attrs.parse(json.loads((body or b"{}").decode("utf-8", errors="surrogateescape")))
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail="malformed rlm_rest body") from exc
 
 
@@ -90,16 +95,18 @@ def create_internal_app() -> FastAPI:
 
     @app.post("/aaa/authorize", dependencies=guarded)
     async def authorize(request: Request) -> Response:
+        # The decision travels as control:NACo-Decision; FreeRADIUS accepts
+        # only on an explicit "accept" (errors and anything else reject).
         attrs = await _attrs(request)
         with _timer("authorize"):
             decision = await service.authorize(attrs)
         if not decision.accepted:
-            return Response(status_code=401)
-        out: dict[str, Any] = {}
+            return JSONResponse(reply({"control:NACo-Decision": "reject"}))
+        out: dict[str, Any] = {"control:NACo-Decision": "accept"}
         if decision.vlan:
             out.update(vlan_attributes(decision.vlan))
         out.update(decision.reply_attributes)
-        return JSONResponse(reply(out)) if out else Response(status_code=204)
+        return JSONResponse(reply(out))
 
     @app.post("/aaa/accounting", dependencies=guarded)
     async def accounting(request: Request) -> Response:

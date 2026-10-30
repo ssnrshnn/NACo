@@ -163,6 +163,7 @@ async def test_pap_accept_with_vlan_and_attributes(client, world):
         Calling_Station_Id="00-1B-63-AA-BB-CC", Called_Station_Id="AA-BB-CC-00-00-01:Corp"))
     assert r.status_code == 200
     body = r.json()
+    assert body["control:NACo-Decision"] == {"value": "accept", "do_xlat": False}
     assert body["Tunnel-Type"] == {"value": "VLAN", "do_xlat": False}
     assert body["Tunnel-Medium-Type"]["value"] == "IEEE-802"
     assert body["Tunnel-Private-Group-Id"]["value"] == "10"
@@ -173,17 +174,21 @@ async def test_pap_accept_with_vlan_and_attributes(client, world):
     assert len(row.decision_digest) == 64
 
 
-async def test_accept_without_attributes_is_204(client, world):
+async def test_accept_without_attributes(client, world):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}])
     r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP",
                                                      NACo_NAS_IP=NAS_IP))
-    assert r.status_code == 204
+    assert r.json() == {"control:NACo-Decision": {"value": "accept", "do_xlat": False}}
+
+
+def rejected(r) -> bool:
+    return r.status_code == 200 and r.json() == {"control:NACo-Decision": {"value": "reject", "do_xlat": False}}
 
 
 async def test_default_deny(client, world):
     r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP",
                                                      NACo_NAS_IP=NAS_IP))
-    assert r.status_code == 401
+    assert rejected(r)
     assert (await logs(world))[0].reason == "no policy matched"
 
 
@@ -204,7 +209,7 @@ async def test_default_deny(client, world):
 async def test_authorize_refusals(client, world, attrs, reason):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=5)
     r = await client.post("/aaa/authorize", json=rlm(**attrs))
-    assert r.status_code == 401
+    assert rejected(r)
     assert (await logs(world))[-1].reason == reason
 
 
@@ -247,7 +252,7 @@ async def test_mab_requires_username_to_be_the_station_mac(client, world):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=30)
     r = await client.post("/aaa/authorize", json=rlm(
         User_Name="alice", Calling_Station_Id="00-1B-63-AA-BB-CC", NACo_Auth_Method="MAB", NACo_NAS_IP=NAS_IP))
-    assert r.status_code == 401
+    assert rejected(r)
     assert (await logs(world))[0].reason == "not a valid MAB request"
 
 
@@ -255,7 +260,7 @@ async def test_blocked_device_is_refused_even_with_valid_user(client, world):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=30)
     r = await client.post("/aaa/authorize", json=rlm(
         User_Name="alice", Calling_Station_Id="66-55-44-33-22-11", NACo_Auth_Method="PAP", NACo_NAS_IP=NAS_IP))
-    assert r.status_code == 401
+    assert rejected(r)
     assert (await logs(world))[0].reason == "device blocked"
 
 
@@ -272,7 +277,7 @@ async def test_active_guest_registration_gives_guest_status(client, world):
     expired = await client.post("/aaa/authorize", json=rlm(
         User_Name="00:00:00:00:00:02", Calling_Station_Id="00:00:00:00:00:02",
         NACo_Auth_Method="MAB", NACo_NAS_IP=NAS_IP))
-    assert expired.status_code == 401
+    assert rejected(expired)
 
 
 async def test_explicit_deny_policy(client, world):
@@ -281,7 +286,7 @@ async def test_explicit_deny_policy(client, world):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=5)
     r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP",
                                                      NACo_NAS_IP=NAS_IP))
-    assert r.status_code == 401
+    assert rejected(r)
     assert (await logs(world))[0].policy_name == "no-alice"
 
 
@@ -346,3 +351,18 @@ async def test_metrics_endpoint_is_open_and_renders(client):
     r = await client.get("/metrics", headers={"Authorization": ""})
     assert r.status_code == 200
     assert "naco_aaa_request_seconds" in r.text
+
+
+async def test_raw_binary_octets_from_rlm_rest_are_tolerated(client):
+    # Exactly what FreeRADIUS 3.2 sends: Message-Authenticator as raw bytes.
+    body = (b'{"User-Name":{"type":"string","value":["alice"]},'
+            b'"User-Password":{"type":"string","value":["pa\\"ss\\\\w\xc3\xb6rd"]},'
+            b'"Message-Authenticator":{"type":"octets","value":["\xe2\xe8\xd4\xb5\xffj\x87\\u0010\\\\n\x8d"]}}')
+    r = await client.post("/aaa/authenticate", content=body)
+    assert r.status_code == 204
+
+
+async def test_invalid_utf8_in_a_password_never_authenticates(client):
+    body = b'{"User-Name":{"type":"string","value":["alice"]},"User-Password":{"type":"string","value":["\xff\xfe"]}}'
+    r = await client.post("/aaa/authenticate", content=body)
+    assert r.status_code == 401

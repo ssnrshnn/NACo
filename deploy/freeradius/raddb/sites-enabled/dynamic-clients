@@ -1,0 +1,9 @@
+# Called for packets from an address with no cached client definition.
+# The client exists only if NACo answers 200 with the client attributes;
+# 404/errors leave it undefined (there is deliberately no trailing "ok").
+server dynamic_clients {
+	authorize {
+		naco_token
+		naco_clients
+	}
+}

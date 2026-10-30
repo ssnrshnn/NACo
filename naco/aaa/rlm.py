@@ -14,6 +14,12 @@ from collections.abc import Mapping
 from typing import Any
 
 
+def _text(value: object) -> str:
+    """Text with any undecodable bytes (surrogate-escaped) turned into U+FFFD."""
+    text = str(value)
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 class Attrs:
     def __init__(self, values: dict[str, list[str]]) -> None:
         self._values = {k.lower(): v for k, v in values.items()}
@@ -26,11 +32,16 @@ class Attrs:
         for name, entry in body.items():
             if not isinstance(name, str):
                 raise ValueError("attribute names must be strings")
-            raw = entry.get("value") if isinstance(entry, dict) else entry
+            if isinstance(entry, dict):
+                if entry.get("type") == "octets":
+                    continue  # binary protocol attributes: never used, not text
+                raw = entry.get("value")
+            else:
+                raw = entry
             if raw is None:
                 continue
             items = raw if isinstance(raw, list) else [raw]
-            values[name] = [str(v) for v in items if v is not None and not isinstance(v, (dict, list))]
+            values[name] = [_text(v) for v in items if v is not None and not isinstance(v, (dict, list))]
         return cls(values)
 
     @classmethod

@@ -1,0 +1,107 @@
+server default {
+	listen {
+		type = auth
+		ipaddr = *
+		port = 1812
+	}
+	listen {
+		type = acct
+		ipaddr = *
+		port = 1813
+	}
+
+	authorize {
+		naco_nas_ip
+
+		if (&EAP-Message) {
+			eap {
+				ok = return
+				updated = return
+			}
+		}
+		# MAB: the NAS says so (Call-Check), or the classic User-Name ==
+		# User-Password == MAC form. NACo additionally requires the MAC to
+		# equal Calling-Station-Id.
+		elsif (&Service-Type && &Service-Type == Call-Check) {
+			naco_mab
+		}
+		elsif (&User-Password && \
+		       (&User-Name =~ /^([0-9a-f]{2}[-:]?){5}[0-9a-f]{2}$/i || \
+		        &User-Name =~ /^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$/i) && \
+		       ("%{tolower:%{User-Password}}" == "%{tolower:%{User-Name}}")) {
+			naco_mab
+		}
+		elsif (&User-Password) {
+			update request {
+				&NACo-Auth-Method := "PAP"
+			}
+			update control {
+				&Auth-Type := naco
+			}
+		}
+		else {
+			reject
+		}
+	}
+
+	authenticate {
+		Auth-Type naco {
+			naco_token
+			naco
+		}
+		eap
+	}
+
+	preacct {
+		naco_nas_ip
+	}
+
+	accounting {
+		naco_token
+		naco
+	}
+
+	# The decision for every method: NACo answers control:NACo-Decision
+	# (accept + VLAN and attributes, or reject); an error also rejects.
+	post-auth {
+		if (!&NACo-Auth-Method && &EAP-Type) {
+			if (&EAP-Type == TLS) {
+				update request {
+					&NACo-Auth-Method := "EAP-TLS"
+				}
+			}
+			elsif (&EAP-Type == TTLS) {
+				update request {
+					&NACo-Auth-Method := "EAP-TTLS"
+				}
+			}
+			elsif (&EAP-Type == PEAP) {
+				update request {
+					&NACo-Auth-Method := "PEAP"
+				}
+			}
+		}
+		if (&session-state:NACo-Inner-Identity) {
+			update request {
+				&NACo-Inner-Identity := &session-state:NACo-Inner-Identity
+			}
+		}
+		naco_token
+		naco
+		# Accept only on NACo's explicit decision. Errors and timeouts
+		# already rejected above (fail/invalid end the section).
+		if (!(&control:NACo-Decision && &control:NACo-Decision == "accept")) {
+			reject
+		}
+
+		Post-Auth-Type REJECT {
+			attr_filter.access_reject
+			# A reject after a completed EAP method would still carry its
+			# EAP-Success; drop it so the eap module answers EAP-Failure.
+			update reply {
+				&EAP-Message !* ANY
+			}
+			eap
+		}
+	}
+}
