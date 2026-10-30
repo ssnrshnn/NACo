@@ -124,7 +124,9 @@ def test_admin_ui_walkthrough(server):
                                                   "device_admin_attributes": ["junos-exec: local-user-name=super-user"]})
         api(page, "POST", "/nas", {"name": "core-sw01", "ip_address": "10.0.0.1", "secret": "a-long-shared-secret-1"})
         api(page, "POST", "/nas", {"name": "wlc-hq", "ip_address": "10.0.0.2", "secret": "a-long-shared-secret-2",
-                                   "require_message_authenticator": False})
+                                   "vendor": "cisco", "require_message_authenticator": False})
+        api(page, "POST", "/nas", {"name": "site-aps", "ip_address": "10.0.20.0/24", "secret": "a-long-shared-secret-3",
+                                   "vendor": "standard"})
         for i, name in enumerate(["alice", "bob", "carol", "dave", "erin"]):
             api(page, "POST", "/users", {"username": name, "password": f"{name}-password-1", "full_name": name.title() + " Example",
                                          "group_id": staff["id"] if i < 4 else netadmins["id"]})
@@ -166,6 +168,15 @@ def test_admin_ui_walkthrough(server):
             page.goto(BASE + path)
             page.wait_for_selector('#page[aria-busy="false"], .kpi .value', timeout=8000)
             shot(page, f"10-{i:02d}{path.replace('/', '-') or '-dashboard'}")
+
+        # RADIUS clients: device type, network clients.
+        page.goto(BASE + "/nas")
+        page.wait_for_selector("text=10.0.20.0/24")
+        assert page.locator("tr", has_text="wlc-hq").locator("text=Cisco IOS-XE / Catalyst 9800").count() == 1
+        page.click("text=Add client")
+        assert page.locator("dialog select option").count() >= 8
+        page.keyboard.press("Escape")
+        shot(page, "14-radius-clients-types")
 
         # Group form: vendor TACACS+ attributes, one per line.
         page.goto(BASE + "/groups")

@@ -342,6 +342,15 @@ async def _latest_accept(db: AsyncSession, nas_ip: str, mac: str | None, usernam
     return (await db.execute(query.order_by(AuthLog.id.desc()).limit(1))).scalar_one_or_none()
 
 
+def _audit_session_id(attrs: Attrs) -> str:
+    """Cisco's own session id (Cisco-AVPair audit-session-id=…), used by Cisco and Meraki CoA."""
+    for pair in attrs.all("Cisco-AVPair"):
+        key, _, value = pair.partition("=")
+        if key.strip().lower() == "audit-session-id":
+            return value.strip()[:64]
+    return ""
+
+
 async def accounting(attrs: Attrs) -> None:
     status = _STATUS.get((attrs.get("Acct-Status-Type") or "").lower())
     req = _request_info(attrs)
@@ -378,6 +387,9 @@ async def accounting(attrs: Attrs) -> None:
         acct_user = (attrs.get("User-Name") or "")[:64]
         session.acct_username = acct_user or session.acct_username
         session.calling_station_id = req.calling_station or session.calling_station_id
+        session.nas_ip_address = parse_ip(attrs.get("NAS-IP-Address")) or session.nas_ip_address
+        session.nas_identifier = (attrs.get("NAS-Identifier") or "")[:64] or session.nas_identifier
+        session.audit_session_id = _audit_session_id(attrs) or session.audit_session_id
         session.mac_address = req.mac or session.mac_address
         framed = parse_ip(attrs.get("Framed-IP-Address")) or parse_ip(attrs.get("Framed-IPv6-Address"))
         if framed:

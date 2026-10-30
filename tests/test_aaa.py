@@ -434,6 +434,17 @@ async def test_numeric_status_and_duplicate_start_are_idempotent(client, world):
     assert len(await sessions(world)) == 1
 
 
+async def test_accounting_keeps_what_the_nas_needs_to_find_the_session(client, world):
+    base = {"Acct_Session_Id": "S9", "NACo_NAS_IP": NAS_IP, "Calling_Station_Id": "AA-BB-CC-00-00-09"}
+    await client.post("/aaa/accounting", json=rlm(
+        Acct_Status_Type="Start", NAS_IP_Address="10.255.0.1", NAS_Identifier="core-sw01",
+        Cisco_AVPair=["service-type=Framed", "audit-session-id=0A0000010000001F2C3D4E5F"], **base))
+    await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Interim-Update", **base))  # not repeated
+    (s,) = await sessions(world)
+    assert (s.nas_ip, s.nas_ip_address, s.nas_identifier, s.audit_session_id) == (
+        NAS_IP, "10.255.0.1", "core-sw01", "0A0000010000001F2C3D4E5F")
+
+
 async def test_accounting_without_nas_source_is_ignored(client, world):
     r = await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Start", Acct_Session_Id="x"))
     assert r.status_code == 204

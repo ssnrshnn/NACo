@@ -315,6 +315,8 @@ class NasClient(Base):
     ip_address: Mapped[str] = mapped_column(String(45), unique=True)
     secret: Mapped[str] = mapped_column(EncryptedString(512, aad="nas_clients.secret"))
     coa_port: Mapped[int] = mapped_column(Integer, default=3799)
+    # Which attributes its Disconnect-Requests carry (naco.radius.vendors).
+    vendor: Mapped[str] = mapped_column(String(32), default="standard")
     require_message_authenticator: Mapped[bool] = mapped_column(Boolean, default=True)
     description: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -351,6 +353,10 @@ class RadiusSession(Base):
     # Identifiers exactly as the NAS reported them — echoed back in CoA.
     acct_username: Mapped[str] = mapped_column(String(64), default="")
     calling_station_id: Mapped[str] = mapped_column(String(64), default="")
+    # As the NAS reported them: echoed in Disconnect-Requests to find the session.
+    nas_ip_address: Mapped[str] = mapped_column(String(45), default="")
+    nas_identifier: Mapped[str] = mapped_column(String(64), default="")
+    audit_session_id: Mapped[str] = mapped_column(String(64), default="")
     mac_address: Mapped[str] = mapped_column(String(17), default="", index=True)
     framed_ip: Mapped[str] = mapped_column(String(45), default="", index=True)
     ssid: Mapped[str] = mapped_column(String(64), default="")

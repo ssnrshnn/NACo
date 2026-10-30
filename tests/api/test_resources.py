@@ -276,3 +276,27 @@ async def test_command_sets(api, tokens):
     assert (await api.delete(f"{V1}/command-sets/{cs['id']}", headers=su)).status_code == 409
     async with api.sf() as db:
         assert (await db.execute(select(Group.command_set_id))).scalar_one() == cs["id"]
+
+
+# ── RADIUS clients ─────────────────────────────────────────────────────────
+
+async def test_nas_vendor_decides_the_default_coa_port(api, tokens):
+    su = tokens[AdminRole.SUPERUSER]
+    vendors = {v["key"]: v for v in (await api.get(f"{V1}/nas/vendors", headers=tokens[AdminRole.VIEWER])).json()}
+    assert vendors["meraki"]["coa_port"] == 1700 and vendors["standard"]["coa_port"] == 3799
+    secret = "a-long-shared-secret-1"
+    ms = (await api.post(f"{V1}/nas", headers=su, json={"name": "ms", "ip_address": "10.0.0.5", "secret": secret,
+                                                         "vendor": "meraki"})).json()
+    assert (ms["vendor"], ms["coa_port"]) == ("meraki", 1700)
+    plain = (await api.post(f"{V1}/nas", headers=su, json={"name": "sw", "ip_address": "10.0.0.6",
+                                                            "secret": secret})).json()
+    assert (plain["vendor"], plain["coa_port"]) == ("standard", 3799)
+    r = await api.post(f"{V1}/nas", headers=su, json={"name": "x", "ip_address": "10.0.0.7", "secret": secret,
+                                                      "vendor": "acme"})
+    assert r.status_code == 422 and "unknown vendor" in r.text
+    r = await api.patch(f"{V1}/nas/{plain['id']}", headers=su, json={"vendor": "aruba"})
+    assert r.json()["vendor"] == "aruba"
+    aps = await api.post(f"{V1}/nas", headers=su, json={"name": "aps", "ip_address": "10.0.20.0/24", "secret": secret})
+    assert aps.status_code == 201 and aps.json()["ip_address"] == "10.0.20.0/24"
+    r = await api.post(f"{V1}/nas", headers=su, json={"name": "all", "ip_address": "10.0.0.0/8", "secret": secret})
+    assert r.status_code == 422 and "/16" in r.text

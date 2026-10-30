@@ -30,7 +30,8 @@ from naco.db.models import Device, Group, GuestRegistration, NasClient, RadiusSe
 from naco.policy.context import AUTH_METHODS, Decision
 from naco.policy.engine import PolicyLoadError, decide, load_policies
 from naco.radius.clients import NasDirectory, nas_directory
-from naco.radius.coa import CoaResult, CoaTarget, Outcome, disconnect
+from naco.radius.coa import CoaResult, CoaTarget, Outcome, SessionIds, disconnect
+from naco.radius.vendors import vendor
 
 log = logging.getLogger(__name__)
 trail = logging.getLogger("naco.trail")
@@ -51,11 +52,11 @@ def _changed(decision: Decision, digest: str) -> bool:
 
 async def send_disconnect(session: RadiusSession, nas: NasClient) -> CoaResult:
     cfg = get_config().radius
-    result = await disconnect(
-        CoaTarget(session.nas_ip, nas.coa_port, nas.secret), session.acct_session_id,
-        username=session.acct_username, calling_station_id=session.calling_station_id,
-        timeout=cfg.coa_timeout_seconds, retries=cfg.coa_retries,
-    )
+    ids = SessionIds(acct_session_id=session.acct_session_id, user_name=session.acct_username,
+                     calling_station_id=session.calling_station_id, nas_ip_address=session.nas_ip_address,
+                     nas_identifier=session.nas_identifier, audit_session_id=session.audit_session_id)
+    result = await disconnect(CoaTarget(session.nas_ip, nas.coa_port, nas.secret), ids, vendor(nas.vendor),
+                              timeout=cfg.coa_timeout_seconds, retries=cfg.coa_retries)
     trail.info("coa disconnect nas=%s session=%s user=%s mac=%s outcome=%s %s", nas.name,
                session.acct_session_id, session.username or "-", session.mac_address or "-",
                result.outcome.value, result.detail)

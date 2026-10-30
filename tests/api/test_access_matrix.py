@@ -77,6 +77,7 @@ EXPECTED: dict[tuple[str, str], tuple[AdminRole, str | None]] = {
     ("POST", "/api/v1/policies/reorder"): (S, None),
     ("POST", "/api/v1/policies/simulate"): (V, None),
     ("GET", "/api/v1/nas"): (V, None),
+    ("GET", "/api/v1/nas/vendors"): (V, None),
     ("POST", "/api/v1/nas"): (S, None),
     ("PATCH", "/api/v1/nas/{nas_id}"): (S, None),
     ("GET", "/api/v1/nas/{nas_id}/secret"): (S, None),
