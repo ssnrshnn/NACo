@@ -17,10 +17,11 @@ in a few minutes.
 | **802.1X** | EAP-TLS (certificates), EAP-TTLS/PAP and PEAP/GTC (passwords), plain PAP |
 | **MAB** | MAC authentication for printers, phones and other devices without a supplicant; new devices wait in *pending* until approved |
 | **Policies** | Ordered rules on user, group, device, vendor, method, switch, SSID and time of day → permit with a VLAN and reply attributes, or deny. Anything unmatched is denied. A simulator shows which rule wins and why |
-| **Change of Authorization** | Edit a policy, block a device or disable a user and only the sessions whose decision actually changed are disconnected (RFC 5176) |
+| **Change of Authorization** | Edit a policy, block a device or disable a user and only the sessions whose decision actually changed are disconnected (RFC 5176), with the attributes each vendor accepts |
+| **Network devices** | Documented for Cisco, Meraki, Aruba, HPE Comware/H3C, Juniper, Huawei, Fortinet, Extreme, Ruckus, Dell, MikroTik, UniFi and Omada; any MAC notation; access points added as a whole network |
 | **Identity** | Local users and LDAP / Active Directory (LDAPS or StartTLS, nested groups, group mapping) |
 | **Guest portal** | Central web authentication: guests accept the terms (optionally with an access code) and are moved to the guest policy |
-| **TACACS+** | Device administration for switch logins (RFC 8907): privilege levels and per-command authorization by group, full accounting |
+| **TACACS+** | Device administration for switch logins (RFC 8907): privilege levels and per-command authorization by group, vendor services (Juniper, Fortinet, NX-OS, Comware, Dell roles), full accounting |
 | **Admin panel** | Fast, keyboard-friendly, live (dashboard, sessions and logs update by themselves), light and dark, works on a phone; mandatory two-factor sign-in; roles *viewer*, *operator*, *superuser*; API tokens; complete audit log |
 | **Operations** | One-command install, online backups (age-encryptable), master-key rotation, CSV import/export, syslog, Prometheus metrics |
 
@@ -94,7 +95,7 @@ Details — Let's Encrypt, released images, firewalls, upgrades — are in
 |---|---|
 | [Install and upgrade](docs/install.md) | requirements, quickstart, TLS, released images, upgrades |
 | [First deployment](docs/pilot.md) | a safe pilot: one port, monitor mode, NACo unreachable, enforcing |
-| [Network devices](docs/network-devices.md) | Cisco, Aruba, Juniper, HPE, Fortinet, MikroTik, UniFi, … |
+| [Network devices](docs/network-devices.md) | what every device needs, and a page per vendor: Cisco, Meraki, Aruba, HPE Comware/H3C, Juniper, Huawei, Fortinet, Extreme, Ruckus, Dell, MikroTik, UniFi, Omada |
 | [Policies](docs/policies.md) | how a decision is made, conditions, reply attributes, CoA |
 | [802.1X and certificates](docs/eap.md) | EAP methods, the EAP CA, client certificates, Windows |
 | [Guest portal](docs/guest-portal.md) | central web authentication and what the network must provide |

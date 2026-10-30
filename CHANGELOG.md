@@ -2,6 +2,44 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+Support for the network devices most organizations run, from each vendor's
+documentation: a [page per vendor](docs/network-devices.md#vendors) — Cisco,
+Meraki, HPE Aruba Networking, HPE Comware/H3C, Juniper, Huawei, Fortinet,
+Extreme, Ruckus, Dell, MikroTik, UniFi and TP-Link Omada.
+
+### Added
+
+- **Device type per RADIUS client.** Disconnect-Requests carry the session
+  and NAS identifiers that vendor accepts (AOS-CX requires a NAS identifier
+  and User-Name; Extreme and Ruckus ICX only Calling-Station-Id and
+  NAS-IP-Address; Juniper nothing but identifiers; Cisco and Meraki match
+  audit-session-id), with the values the device reported. Sessions now keep
+  NAS-IP-Address, NAS-Identifier and Cisco's audit-session-id. The CoA port
+  defaults to the type's (Meraki 1700).
+- **A RADIUS client can be a network** (at most /16, /48 for IPv6) for
+  platforms that send RADIUS from every access point or switch — UniFi,
+  Omada, Meraki, Mist, Instant, SmartZone. The exact address wins over a
+  network; disconnects go to the device itself.
+- **TACACS+ for other vendors' services.** A group lists
+  `service: attribute=value` lines — Juniper `junos-exec`, Fortinet
+  `fortigate`, Dell OS10 `ppp`, NX-OS and Comware roles on `shell`.
+  Previously any service but `shell` was refused.
+- MAB in every MAC notation (Huawei/H3C `aabb-ccdd-eeff`, ArubaOS-Switch
+  `aabbcc-ddeeff`, MikroTik `AABB:CCDD:EEFF`, Ruckus ICX `aa.bb.cc.dd.ee.ff`,
+  …), and with an empty or no password (MikroTik, UniFi, Omada; CHAP MAC
+  authentication of ArubaOS-Switch).
+- The SSID is read from `Called-Station-SSID`, `Aruba-Essid-Name`,
+  `Ruckus-SSID`, `Fortinet-SSID`, `Trapeze-SSID`, `TP-CAPWAP-SSID` and
+  Cisco's `cisco-wlan-ssid` when `Called-Station-Id` has none.
+
+### Changed
+
+- Status-Server probes are answered only while NACo can decide, so a switch
+  that probes (Ruckus ICX by default) fails over at once.
+- Database migration 0002 runs at start-up.
+
 ## 3.0.2 — 2026-10-30
 
 ### Fixed
