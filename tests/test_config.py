@@ -171,3 +171,20 @@ def test_dev_mode_fills_missing_secrets():
 def test_dev_mode_still_rejects_bad_values():
     with pytest.raises(ConfigError):
         load_secrets({"NACO_DEV": "1", "NACO_INTERNAL_TOKEN": "short"})
+
+
+# ── shipped files ───────────────────────────────────────────────────────────
+
+def test_shipped_config_is_valid_and_matches_defaults():
+    """config/config.yaml documents the defaults; it must load and agree with them."""
+    from pathlib import Path
+    shipped = load_config(str(Path(__file__).parent.parent / "config" / "config.yaml"), env={})
+    assert shipped == load_config(env={})
+
+
+def test_env_example_holds_only_placeholders():
+    from pathlib import Path
+    text = (Path(__file__).parent.parent / ".env.example").read_text()
+    values = dict(line.split("=", 1) for line in text.splitlines() if line and not line.startswith("#"))
+    for name in ("NACO_MASTER_KEY", "NACO_INTERNAL_TOKEN", "NACO_ADMIN_PASSWORD"):
+        assert values[name] == "REPLACE_ME"

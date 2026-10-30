@@ -1,265 +1,94 @@
-# NACo — the complete stack in ONE file.
+# NACo — three containers, one file.
 #
-#   Core (always):   naco + postgres + redis + caddy (auto-TLS ingress)
-#   Optional:        --profile eap   → FreeRADIUS sidecar (EAP-TLS / PEAP / EAP-TTLS)
-#                    --profile obs   → Prometheus + Grafana + Loki + Promtail
+#   caddy       80/tcp, 443/tcp   admin panel + API (HTTPS), guest portal (HTTP)
+#   freeradius  1812/udp, 1813/udp RADIUS for switches and access points
+#   naco        49/tcp            TACACS+ (the AAA API and UI stay internal)
 #
-# Quick start (generates .env secrets for you):
-#
-#     ./quickstart.sh                 # core stack
-#     ./quickstart.sh --eap --obs     # everything
-#
-# Or by hand:
-#
-#     cp .env.example .env            # then fill in the REQUIRED values
-#     docker compose up -d                          # core
-#     docker compose --profile eap up -d            # core + EAP
-#     docker compose --profile eap --profile obs up -d
-#
-# Profiles can also be pinned in .env:  COMPOSE_PROFILES=eap,obs
-
+# Start with ./quickstart.sh, which writes .env and the EAP certificates.
 name: naco
 
-x-default-logging: &default_logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  init: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
 
 services:
-
-  # ── Core ─────────────────────────────────────────────────────────────────
-  #
-  # `naco` runs with host networking so RADIUS/TACACS+ see the real NAS
-  # source IPs and the Scapy profiler can sniff DHCP/ARP. It therefore
-  # reaches postgres/redis via the loopback ports published below —
-  # bound to 127.0.0.1 only, never exposed to the network.
-
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER:     ${NACO_DB_USER:-naco}
-      POSTGRES_PASSWORD: ${NACO_DB_PASSWORD:?NACO_DB_PASSWORD is required}
-      POSTGRES_DB:       ${NACO_DB_NAME:-naco}
-    ports:
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - naco_net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${NACO_DB_USER:-naco} -d ${NACO_DB_NAME:-naco}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    logging: *default_logging
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - naco_net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-    logging: *default_logging
-
   naco:
-    image: ${NACO_IMAGE:-ghcr.io/ssnrshnn/naco:latest}
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis:    { condition: service_healthy }
-    network_mode: host
-    cap_add:
-      - NET_RAW       # required by the Scapy DHCP/ARP profiler
-      - NET_ADMIN
-    # python3-netraw is the interpreter copy carrying cap_net_raw file
-    # capabilities — the all-in-one process includes the profiler, which
-    # needs raw sockets as a non-root user. Plain `python` works too if
-    # the profiler is disabled.
-    command: ["python3-netraw", "-m", "naco.main"]
+    <<: *hardening
+    image: ${NACO_IMAGE:-naco:local}
+    build: { context: ., dockerfile: deploy/Dockerfile }
     environment:
-      NACO_CONFIG:          /etc/naco/config.yaml
-      NACO_DB_URL:          postgresql+asyncpg://${NACO_DB_USER:-naco}:${NACO_DB_PASSWORD}@127.0.0.1:5432/${NACO_DB_NAME:-naco}
-      NACO_REDIS_URL:       redis://127.0.0.1:6379/0
-      NACO_SESSION_SECRET:  ${NACO_SESSION_SECRET:?NACO_SESSION_SECRET is required}
-      NACO_API_SECRET:      ${NACO_API_SECRET:?NACO_API_SECRET is required}
-      NACO_CSRF_SECRET:     ${NACO_CSRF_SECRET:?NACO_CSRF_SECRET is required}
-      NACO_ADMIN_PASSWORD:  ${NACO_ADMIN_PASSWORD:?NACO_ADMIN_PASSWORD is required}
-      # Encrypts NAS secrets / TACACS+ keys / TOTP seeds at rest (optional
-      # but strongly recommended — quickstart.sh generates one).
-      NACO_MASTER_KEY:      ${NACO_MASTER_KEY:-}
-      # Setting the token auto-enables the /api/v1/eap/* endpoints for the
-      # FreeRADIUS sidecar. Empty = EAP endpoints refuse all requests.
-      NACO_EAP_BEARER_TOKEN: ${NACO_EAP_BEARER_TOKEN:-}
-      NACO_HOST:            0.0.0.0
-      NACO_PORT:            "8080"
+      NACO_MASTER_KEY: ${NACO_MASTER_KEY:?run ./quickstart.sh first}
+      NACO_INTERNAL_TOKEN: ${NACO_INTERNAL_TOKEN:?run ./quickstart.sh first}
+      NACO_ADMIN_PASSWORD: ${NACO_ADMIN_PASSWORD:-}
+      NACO_LDAP_BIND_PASSWORD: ${NACO_LDAP_BIND_PASSWORD:-}
+      # Only Caddy may set X-Forwarded-For.
+      NACO_TRUSTED_PROXIES: ${NACO_IP_CADDY:-172.30.0.10}
+      TZ: ${TZ:-UTC}
     volumes:
-      - ./config:/etc/naco:ro
       - naco_data:/var/lib/naco
+      - ./config/config.yaml:/etc/naco/config.yaml:ro
+      - naco_backups:/backups
+    tmpfs: ["/tmp"]
+    ports:
+      - "49:4949/tcp"
+    networks:
+      naco: { ipv4_address: "${NACO_IP_APP:-172.30.0.12}" }
+
+  freeradius:
+    <<: *hardening
+    image: ${NACO_RADIUS_IMAGE:-naco-freeradius:local}
+    build: { context: deploy/freeradius }
+    environment:
+      NACO_AAA_URL: http://naco:8081
+      NACO_INTERNAL_TOKEN: ${NACO_INTERNAL_TOKEN:?run ./quickstart.sh first}
+    volumes:
+      - ./deploy/freeradius/certs:/etc/raddb/certs:ro
+    tmpfs: ["/opt/var/run/radiusd:uid=1812,gid=1812", "/tmp"]
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+    depends_on:
+      naco: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "python", "-c",
-        "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health/ready', timeout=3).status==200 else 1)"]
+      test: ["CMD", "pgrep", "radiusd"]
       interval: 30s
       timeout: 5s
-      retries: 3
-      start_period: 20s
-    logging: *default_logging
+    networks:
+      naco: { ipv4_address: "${NACO_IP_RADIUS:-172.30.0.11}" }
 
   caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    depends_on:
-      naco: { condition: service_started }
-    network_mode: host
+    <<: *hardening
+    image: caddy:2.10-alpine
+    cap_add: [NET_BIND_SERVICE]
     environment:
-      NACO_DOMAIN:      ${NACO_DOMAIN:-localhost}
-      NACO_UPSTREAM:    127.0.0.1:8080
-      NACO_TLS_EMAIL:   ${NACO_TLS_EMAIL:-admin@example.com}
+      NACO_HOST: ${NACO_HOST:?run ./quickstart.sh first}
+      NACO_TLS: ${NACO_TLS:-internal}
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    logging: *default_logging
-
-  # ── EAP termination (on by default — COMPOSE_PROFILES=eap in .env) ──────
-  #
-  # FreeRADIUS terminates EAP-TLS / EAP-TTLS / PEAP on ports 2812/2813 and
-  # calls NACo back on /api/v1/eap/* for the actual policy decision. NACo's
-  # built-in RADIUS keeps 1812/1813 for PAP / CHAP / MAB. The bearer token
-  # and TLS certs are generated by quickstart.sh. Opt out by removing `eap`
-  # from COMPOSE_PROFILES in .env (or run ./quickstart.sh --no-eap).
-  #
-  # Individual files are overlaid onto the stock raddb so the image's
-  # radiusd.conf and default modules stay intact.
-
-  freeradius:
-    image: freeradius/freeradius-server:3.2.10-alpine
-    restart: unless-stopped
-    network_mode: host
-    profiles: ["eap"]
+    tmpfs: ["/tmp"]
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
     depends_on:
       naco: { condition: service_healthy }
-    environment:
-      # Must match `eap.bearer_token` on the NACo side (NACo auto-enables its
-      # EAP endpoints when NACO_EAP_BEARER_TOKEN is set). quickstart.sh
-      # generates it.
-      NACO_EAP_TOKEN:   ${NACO_EAP_BEARER_TOKEN:-}
-      NACO_EAP_URL:     http://127.0.0.1:8080/api/v1/eap
-      NACO_FREERADIUS_SHARED_SECRET: ${NACO_FREERADIUS_SHARED_SECRET:-}
-    volumes:
-      - ./deploy/freeradius/raddb/clients.conf:/etc/raddb/clients.conf:ro
-      - ./deploy/freeradius/raddb/mods-available/rest:/etc/raddb/mods-enabled/rest:ro
-      - ./deploy/freeradius/raddb/mods-available/eap:/etc/raddb/mods-enabled/eap:ro
-      - ./deploy/freeradius/raddb/sites-available/default:/etc/raddb/sites-enabled/default:ro
-      - ./deploy/freeradius/raddb/sites-available/inner-tunnel:/etc/raddb/sites-enabled/inner-tunnel:ro
-      # RadSec (RADIUS/TLS, RFC 6614) on 2083/tcp — mutual TLS required, so
-      # the listener is inert for anyone without a client cert from our CA.
-      # Remove this mount to disable. See docs/RADSEC.md.
-      - ./deploy/freeradius/raddb/sites-available/radsec:/etc/raddb/sites-enabled/radsec:ro
-      - ./deploy/freeradius/certs:/etc/raddb/certs:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep radiusd >/dev/null"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    logging: *default_logging
-
-  # ── Optional: observability (--profile obs) ──────────────────────────────
-
-  # `naco` runs with host networking, so its /metrics endpoint is only
-  # reachable on the host itself — bridged containers can't cross back to a
-  # host-networked port on many Linux hosts. Prometheus and Grafana therefore
-  # also run in the host namespace and bind to 127.0.0.1 only (never the
-  # network/internet); they reach NACo, each other, and Loki over loopback.
-  prometheus:
-    image: prom/prometheus:v2.54.0
-    restart: unless-stopped
-    profiles: ["obs"]
-    network_mode: host
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-      - "--storage.tsdb.retention.time=30d"
-      # Loopback-only listener: never exposed to the network/internet.
-      - "--web.listen-address=127.0.0.1:9090"
-    volumes:
-      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    logging: *default_logging
-
-  grafana:
-    image: grafana/grafana:11.2.0
-    restart: unless-stopped
-    profiles: ["obs"]
-    network_mode: host
-    depends_on:
-      prometheus: { condition: service_started }
-      loki:       { condition: service_started }
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      # Loopback-only listener on the default port 3000.
-      GF_SERVER_HTTP_ADDR: "127.0.0.1"
-      GF_SERVER_HTTP_PORT: "3000"
-    volumes:
-      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
-    logging: *default_logging
-
-  loki:
-    image: grafana/loki:3.2.0
-    restart: unless-stopped
-    profiles: ["obs"]
-    command: ["-config.file=/etc/loki/local-config.yaml"]
-    ports:
-      # Loopback-only: lets the host-networked Grafana query Loki, while
-      # promtail still pushes over the bridge network.
-      - "127.0.0.1:3100:3100"
-    volumes:
-      - loki_data:/loki
-    networks: [naco_net]
-    logging: *default_logging
-
-  promtail:
-    image: grafana/promtail:3.2.0
-    restart: unless-stopped
-    profiles: ["obs"]
-    depends_on:
-      loki: { condition: service_started }
-    command: ["-config.file=/etc/promtail/config.yml"]
-    volumes:
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./deploy/promtail/promtail.yml:/etc/promtail/config.yml:ro
-    networks: [naco_net]
-    logging: *default_logging
+    networks:
+      naco: { ipv4_address: "${NACO_IP_CADDY:-172.30.0.10}" }
 
 networks:
-  naco_net:
-    driver: bridge
+  naco:
+    ipam:
+      config: [{ subnet: "${NACO_SUBNET:-172.30.0.0/24}" }]
 
 volumes:
-  postgres_data:
-  redis_data:
+  naco_data:
+  naco_backups:
   caddy_data:
   caddy_config:
-  naco_data:
-  prometheus_data:
-  grafana_data:
-  loki_data:
