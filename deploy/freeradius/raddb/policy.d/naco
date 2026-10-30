@@ -13,6 +13,17 @@ naco_nas_ip {
 	}
 }
 
+# NACo could not be asked — down, timed out, or answering an error. Stay
+# silent: after a few unanswered requests the NAS counts this server as dead
+# and applies its own server-dead action (a critical VLAN, or no access).
+# Nobody is let in without NACo's decision either way.
+naco_unavailable {
+	update control {
+		&Response-Packet-Type := Do-Not-Respond
+	}
+	reject
+}
+
 # MAB has no credential to check: NACo decides in post-auth.
 naco_mab {
 	update request {

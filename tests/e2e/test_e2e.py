@@ -68,18 +68,22 @@ def _quote(value: str) -> str:
 
 
 def radclient(attrs: dict[str, str], *, kind: str = "auth", port: int = 1812, secret: str = SECRET,
-              message_authenticator: bool = True, service: str = "client") -> str:
+              message_authenticator: bool = True, service: str = "client", wait: int = 3) -> str:
     lines = [f"{k} = {_quote(v)}" for k, v in attrs.items()]
     if message_authenticator and kind == "auth":
         lines.append("Message-Authenticator = 0x00")
-    proc = in_client(f"radclient -x -r 1 -t 3 {RADIUS}:{port} {kind} {secret}", "\n".join(lines) + "\n",
+    proc = in_client(f"radclient -x -r 1 -t {wait} {RADIUS}:{port} {kind} {secret}", "\n".join(lines) + "\n",
                      service=service)
     return proc.stdout + proc.stderr
 
 
-def eapol(conf: str, mac: str = "02:00:00:00:00:01") -> bool:
-    proc = in_client(f"cat > /tmp/eap.conf && eapol_test -c /tmp/eap.conf -a {RADIUS} -s {SECRET} "
+def eapol_run(conf: str, mac: str = "02:00:00:00:00:01") -> subprocess.CompletedProcess[str]:
+    return in_client(f"cat > /tmp/eap.conf && eapol_test -c /tmp/eap.conf -a {RADIUS} -s {SECRET} "
                      f"-M {mac} -t 15", conf)
+
+
+def eapol(conf: str, mac: str = "02:00:00:00:00:01") -> bool:
+    proc = eapol_run(conf, mac)
     if proc.returncode != 0 and "CTRL-EVENT-EAP-SUCCESS" in proc.stdout:
         # A RADIUS reject must never deliver EAP-Success to the supplicant.
         raise AssertionError("Access-Reject carried EAP-Success:\n" + proc.stdout[-2000:])
@@ -132,10 +136,10 @@ def test_unknown_nas_is_ignored():
 
 # ── MAB ────────────────────────────────────────────────────────────────────
 
-def mab(mac: str, username: str | None = None) -> str:
+def mab(mac: str, username: str | None = None, wait: int = 3) -> str:
     user = username or mac.replace(":", "").lower()
     return radclient({"User-Name": user, "User-Password": user, "Calling-Station-Id": mac.replace(":", "-"),
-                      "Service-Type": "Call-Check"})
+                      "Service-Type": "Call-Check"}, wait=wait)
 
 
 def test_mab_approved_printer():
@@ -273,14 +277,30 @@ def test_accounting_lifecycle():
 
 # ── fail closed (keep last: stops NACo) ────────────────────────────────────
 
-def test_zz_fail_closed_when_naco_is_down():
+def test_zz_no_answer_when_naco_cannot_be_asked():
+    """FreeRADIUS stays silent, so the NAS counts it dead and applies its own
+    server-dead action — and never lets anyone in."""
+    # FreeRADIUS knows the NAS already (as with any switch in use); an
+    # unknown NAS is ignored anyway while NACo cannot be asked.
+    assert "Received Access-Accept" in radclient({"User-Name": "alice", "User-Password": ALICE_PW})
     compose("stop", "naco")
     try:
-        out = radclient({"User-Name": "alice", "User-Password": ALICE_PW})
-        assert "Received Access-Accept" not in out, out
-        assert not eapol(ttls("erin", ERIN_PW))
+        # Long enough to see a reject: reaching a stopped NACo takes seconds.
+        for out in (radclient({"User-Name": "alice", "User-Password": ALICE_PW}, wait=10),
+                    mab("02:00:00:00:00:40", wait=10)):
+            assert "Received Access-" not in out, out
+        for conf in (ttls("erin", ERIN_PW), peap("erin", ERIN_PW), tls("alice")):
+            proc = eapol_run(conf)
+            assert proc.returncode != 0 and "Access-Accept" not in proc.stdout and "Access-Reject" not in proc.stdout, \
+                proc.stdout[-2000:]
         acct = radclient({"Acct-Session-Id": "E2E-2", "Acct-Status-Type": "Start", "User-Name": "alice"},
                          kind="acct", port=1813)
         assert "Received Accounting-Response" not in acct, acct
     finally:
         compose("start", "naco")
+    for _ in range(30):  # answers again as soon as NACo is back
+        if "Received Access-Accept" in radclient({"User-Name": "alice", "User-Password": ALICE_PW}):
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("no answer after NACo came back")
