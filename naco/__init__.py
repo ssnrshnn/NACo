@@ -1,4 +1,3 @@
-"""NACo — a modern, container-native Network Access Control & AAA server."""
+"""NACo — a small, secure, single-host Network Access Control & AAA server."""
 
-__version__ = "2.3.0"
-__author__  = "NACo contributors"
+__version__ = "3.0.0.dev0"
