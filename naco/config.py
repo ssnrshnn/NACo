@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import ipaddress
 import logging
@@ -246,7 +247,7 @@ class Secrets(BaseModel):
 
 _PLACEHOLDER_PREFIXES = ("replace_me", "change_me")
 _DEV_MASTER_KEY = hashlib.sha256(b"naco-development-master-key").digest()
-_DEV_INTERNAL_TOKEN = "naco-development-internal-token-not-for-production"
+_DEV_INTERNAL_TOKEN = "naco-development-internal-token-not-for-production"  # noqa: S105 — NACO_DEV only
 
 
 def _read_secret(env: Mapping[str, str], name: str) -> str | None:
@@ -269,15 +270,9 @@ def parse_master_key(material: str) -> bytes:
     """Decode a 32-byte key given as base64 or hex."""
     material = material.strip()
     candidates: list[bytes] = []
-    for decode in (base64.b64decode, base64.urlsafe_b64decode):
-        try:
+    for decode in (base64.b64decode, base64.urlsafe_b64decode, bytes.fromhex):
+        with contextlib.suppress(binascii.Error, ValueError):
             candidates.append(decode(material))
-        except (binascii.Error, ValueError):
-            pass
-    try:
-        candidates.append(bytes.fromhex(material))
-    except ValueError:
-        pass
     for key in candidates:
         if len(key) == 32:
             return key

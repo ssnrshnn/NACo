@@ -67,7 +67,7 @@ Helm chart + Kubernetes dokümanları ve CI işi · rol bazlı süreç ayrımı 
   - `NACO_INTERNAL_TOKEN` — FreeRADIUS ↔ NACo.
   - Opsiyonel: `NACO_LDAP_BIND_PASSWORD`.
 - Her sır `NAME_FILE` biçimiyle dosyadan (Docker secret) okunabilir.
-- Veritabanındaki şifreli değerler (NAS sırları, TACACS anahtarları, TOTP tohumları) AAD olarak `tablo:sütun:satır-id` ile şifrelenir → satırlar arası yer değiştirme imkânsız. Düz metin değer okunduğunda kabul edilmez.
+- Veritabanındaki şifreli değerler (NAS sırları, TACACS anahtarları, TOTP tohumları) AAD olarak `tablo.sütun` ile şifrelenir → bir değer başka bir sütuna taşınırsa çözülemez. (Satır kimliği INSERT anında henüz bilinmediği için satır düzeyinde bağlama yapılmaz; aynı sütunda satır takası yalnızca DB yazma yetkisi olan birine açıktır.) Düz metin değer okunduğunda kabul edilmez.
 - Açılışta: `NACO_MASTER_KEY` (tam 32 bayt, base64/hex) veya `NACO_INTERNAL_TOKEN` (en az 32 karakter) eksik, kısa veya yer tutucu (`REPLACE_ME…`, `CHANGE_ME…`) ise süreç açılmaz. NAS/TACACS sırları panelde en az 16 karakter olmalıdır. "Debug bypass" yok; geliştirme kolaylığı yalnızca `NACO_DEV=1` ortam değişkeni ile ve büyük bir uyarıyla.
 
 ### Kurulum (`./quickstart.sh`)

@@ -10,7 +10,17 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -80,7 +90,7 @@ class TacacsKind(StrEnum):
 
 class ActorType(StrEnum):
     ADMIN = "ADMIN"
-    TOKEN = "TOKEN"
+    TOKEN = "TOKEN"  # noqa: S105 — an actor kind, not a credential
     SYSTEM = "SYSTEM"
     CLI = "CLI"
 

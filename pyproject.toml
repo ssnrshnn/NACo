@@ -111,3 +111,4 @@ warn_unused_configs = true
 no_implicit_optional = true
 check_untyped_defs = true
 exclude = ["naco/db/migrations/"]
+plugins = ["pydantic.mypy"]
