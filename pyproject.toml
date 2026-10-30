@@ -88,6 +88,7 @@ markers = [
     "e2e: needs Docker (real FreeRADIUS); run with `pytest -m e2e`",
 ]
 addopts = "-m 'not e2e'"
+filterwarnings = ["ignore:.*is deprecated. Please use:DeprecationWarning:ldap3"]
 
 [tool.ruff]
 line-length = 110

@@ -150,9 +150,20 @@ class LdapConfig(_Strict):
         return v
 
     @model_validator(mode="after")
-    def _enabled_needs_servers(self) -> LdapConfig:
+    def _transport(self) -> LdapConfig:
         if self.enabled and not self.servers:
             raise ValueError("ldap.enabled requires at least one entry in servers")
+        for uri in self.servers:
+            scheme = uri.split("://", 1)[0].lower() if "://" in uri else ""
+            if scheme not in ("ldap", "ldaps"):
+                raise ValueError(f"{uri!r}: servers must be ldap:// or ldaps:// URIs")
+            if scheme == "ldaps" and self.start_tls:
+                raise ValueError(f"{uri!r}: start_tls cannot be combined with ldaps://")
+            if scheme == "ldap" and not self.start_tls and not self.allow_insecure:
+                raise ValueError(
+                    f"{uri!r} sends passwords in clear text — use ldaps://, start_tls: true, "
+                    "or set allow_insecure: true deliberately"
+                )
         return self
 
 

@@ -29,6 +29,35 @@ def _isolated_env(monkeypatch, tmp_path):
     config.reset_caches()
 
 
+@pytest.fixture(autouse=True)
+def _fast_bcrypt(monkeypatch):
+    from naco.core import passwords
+    monkeypatch.setattr(passwords, "BCRYPT_ROUNDS", 4)
+    passwords._dummy_hash.cache_clear()
+    yield
+    passwords._dummy_hash.cache_clear()
+
+
+@pytest.fixture
+async def app_db(tmp_path):
+    """The process-wide engine on a freshly migrated database."""
+    from naco.db import engine as eng
+    from naco.db.migrate import upgrade_head
+
+    path = str(tmp_path / "naco.db")
+    upgrade_head(path)
+    eng.init_engine(path)
+    yield eng.session_factory()
+    await eng.dispose_engine()
+
+
+def write_config(tmp_path, monkeypatch, text: str) -> None:
+    p = tmp_path / "config.yaml"
+    p.write_text(text)
+    monkeypatch.setenv("NACO_CONFIG", str(p))
+    config.reset_caches()
+
+
 @pytest.fixture
 async def db_engine(tmp_path):
     import naco.db.models  # noqa: F401 — register tables

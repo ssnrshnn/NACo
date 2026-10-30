@@ -3,12 +3,6 @@ import pytest
 from naco.core import passwords
 
 
-@pytest.fixture(autouse=True)
-def fast_bcrypt(monkeypatch):
-    monkeypatch.setattr(passwords, "BCRYPT_ROUNDS", 4)
-    passwords._dummy_hash.cache_clear()
-
-
 async def test_hash_and_verify():
     h = await passwords.hash_password("correct horse")
     assert h.startswith("$2")
