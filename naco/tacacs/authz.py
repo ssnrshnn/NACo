@@ -8,6 +8,7 @@ configured otherwise) — never to RADIUS policies.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
@@ -39,6 +40,37 @@ def privilege_allowed(user: UserInfo, requested: int) -> Verdict:
     if requested > granted:
         return Verdict(False, f"privilege {requested} requested, {granted} granted")
     return Verdict(True, "ok")
+
+
+# "service: attr=value" — or attr*value for an optional attribute. Values are
+# printable ASCII; an AV pair is at most 255 bytes on the wire.
+_SERVICE_ATTRIBUTE = re.compile(r"^\s*([A-Za-z0-9_.-]{1,32})\s*:\s*([A-Za-z0-9_.:-]{1,64})\s*([=*])\s*([\x20-\x7e]*?)\s*$")
+
+
+def parse_service_attribute(line: str) -> tuple[str, str]:
+    """'junos-exec: local-user-name=super-user' → ('junos-exec', 'local-user-name=super-user')."""
+    match = _SERVICE_ATTRIBUTE.match(line)
+    if not match:
+        raise ValueError(f"{line.strip()[:60]!r} is not 'service: attribute=value'")
+    service, attr, sep, value = match.groups()
+    if not value:
+        raise ValueError(f"{attr} has no value")
+    if service.lower() == "shell" and attr.lower() == "priv-lvl":
+        raise ValueError("priv-lvl comes from the group's privilege level")
+    pair = f"{attr}{sep}{value}"
+    if len(pair.encode()) > 255:
+        raise ValueError(f"{attr} is longer than 255 bytes")
+    return service, pair
+
+
+def service_attributes(user: UserInfo, service: str) -> list[str]:
+    """The AV pairs a group's members receive for ``service`` (case-insensitive)."""
+    out = []
+    for line in user.device_admin_attributes:
+        name, pair = parse_service_attribute(line)
+        if name.lower() == service.lower():
+            out.append(pair)
+    return out
 
 
 def parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:

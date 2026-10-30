@@ -29,7 +29,9 @@ from naco.db.engine import session_factory
 from naco.db.models import Device, Group, GuestRegistration, NasClient, RadiusSession, User
 from naco.policy.context import AUTH_METHODS, Decision
 from naco.policy.engine import PolicyLoadError, decide, load_policies
-from naco.radius.coa import CoaResult, CoaTarget, Outcome, disconnect
+from naco.radius.clients import NasDirectory, nas_directory
+from naco.radius.coa import CoaResult, CoaTarget, Outcome, SessionIds, disconnect
+from naco.radius.vendors import vendor
 
 log = logging.getLogger(__name__)
 trail = logging.getLogger("naco.trail")
@@ -50,27 +52,27 @@ def _changed(decision: Decision, digest: str) -> bool:
 
 async def send_disconnect(session: RadiusSession, nas: NasClient) -> CoaResult:
     cfg = get_config().radius
-    result = await disconnect(
-        CoaTarget(nas.ip_address, nas.coa_port, nas.secret), session.acct_session_id,
-        username=session.acct_username, calling_station_id=session.calling_station_id,
-        timeout=cfg.coa_timeout_seconds, retries=cfg.coa_retries,
-    )
+    ids = SessionIds(acct_session_id=session.acct_session_id, user_name=session.acct_username,
+                     calling_station_id=session.calling_station_id, nas_ip_address=session.nas_ip_address,
+                     nas_identifier=session.nas_identifier, audit_session_id=session.audit_session_id)
+    result = await disconnect(CoaTarget(session.nas_ip, nas.coa_port, nas.secret), ids, vendor(nas.vendor),
+                              timeout=cfg.coa_timeout_seconds, retries=cfg.coa_retries)
     trail.info("coa disconnect nas=%s session=%s user=%s mac=%s outcome=%s %s", nas.name,
                session.acct_session_id, session.username or "-", session.mac_address or "-",
                result.outcome.value, result.detail)
-    bus.publish(Event(EventType.ACCOUNTING, {"nas": nas.ip_address, "status": "coa",
+    bus.publish(Event(EventType.ACCOUNTING, {"nas": session.nas_ip, "status": "coa",
                                              "session": session.acct_session_id,
                                              "outcome": result.outcome.value}))
     return result
 
 
-async def _load_world(sessions: list[RadiusSession]) -> tuple[dict[str, NasClient], dict[str, UserInfo],
+async def _load_world(sessions: list[RadiusSession]) -> tuple[NasDirectory, dict[str, UserInfo],
                                                               dict[str, Device], set[str]]:
     usernames = {s.username for s in sessions if s.username}
     macs = {s.mac_address for s in sessions if s.mac_address}
     now = utcnow()
     async with session_factory()() as db:
-        nas = {n.ip_address: n for n in (await db.execute(select(NasClient))).scalars()}
+        nas = await nas_directory(db)
         users: dict[str, UserInfo] = {}
         if usernames:
             rows = await db.execute(select(User, Group).outerjoin(Group, User.group_id == Group.id)
@@ -110,7 +112,7 @@ async def reevaluate(reasons: Iterable[str] = (), concurrency: int = 20) -> Reev
     now = utcnow()
     targets: list[tuple[RadiusSession, NasClient]] = []
     for s in sessions:
-        nas = nas_by_ip.get(s.nas_ip)
+        nas = nas_by_ip.find(s.nas_ip)
         if s.auth_method not in AUTH_METHODS or nas is None:
             continue
         summary.checked += 1

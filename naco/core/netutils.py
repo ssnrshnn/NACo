@@ -5,12 +5,18 @@ import ipaddress
 import re
 from collections.abc import Iterable
 
-_MAC_FORMS = (
-    re.compile(r"^[0-9a-f]{2}([:-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}$", re.I),  # aa:bb:.. / AA-BB-..
-    re.compile(r"^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$", re.I),              # aabb.ccdd.eeff
-    re.compile(r"^[0-9a-f]{12}$", re.I),                                        # aabbccddeeff
+# Every way network devices write a MAC address, in any case: twelve hex
+# digits in groups of 2, 4 or 6 with one separator throughout, or none —
+# aa:bb:…, aa-bb-…, aa.bb.… (Ruckus ICX), aabb.ccdd.eeff (Cisco),
+# aabb-ccdd-eeff (Huawei, H3C, Comware), aabbcc-ddeeff (ArubaOS-Switch),
+# AABB:CCDD:EEFF and "AA BB CC …" (MikroTik), aabbccddeeff.
+_MAC = (
+    *(rf"[0-9a-f]{{{n}}}(?:{re.escape(sep)}[0-9a-f]{{{n}}}){{{12 // n - 1}}}"
+      for sep in ":-. " for n in (2, 4, 6)),
+    r"[0-9a-f]{12}",
 )
-_STATION = re.compile(r"^([0-9a-f]{2}(?:[:-][0-9a-f]{2}){5})(?::(.*))?$", re.I | re.S)
+_MAC_FORMS = tuple(re.compile(rf"^{form}$", re.I) for form in _MAC)
+_STATION = re.compile(rf"^({'|'.join(_MAC)})(?::(.*))?$", re.I | re.S)
 
 
 def normalize_mac(value: str | None) -> str | None:
@@ -31,7 +37,7 @@ def is_randomized_mac(mac: str) -> bool:
 
 
 def parse_called_station(value: str | None) -> tuple[str | None, str | None]:
-    """Split ``Called-Station-Id`` ("AA-BB-CC-DD-EE-FF:SSID") into (mac, ssid)."""
+    """Split ``Called-Station-Id`` ("AA-BB-CC-DD-EE-FF:SSID", any MAC form) into (mac, ssid)."""
     if not value:
         return None, None
     m = _STATION.match(value.strip())
@@ -39,6 +45,32 @@ def parse_called_station(value: str | None) -> tuple[str | None, str | None]:
         return None, None
     ssid = (m.group(2) or "").strip() or None
     return normalize_mac(m.group(1)), (ssid[:64] if ssid else None)
+
+
+# A RADIUS client is one address, or a network whose devices each send RADIUS
+# (access points, cloud-managed switches). Wider networks are refused: they
+# would make most of a site a RADIUS client.
+_WIDEST_PREFIX = {4: 16, 6: 48}
+
+
+def parse_client_address(value: str | None) -> str:
+    """'10.0.0.5' or '10.0.20.0/24' (a /32 or /128 becomes the plain address)."""
+    text = (value or "").strip()
+    if "/" not in text:
+        if (ip := parse_ip(text)) is None:
+            raise ValueError("not an IP address or network")
+        return ip
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        raise ValueError("not an IP address or network") from None
+    if net.prefixlen == net.max_prefixlen:
+        return str(net.network_address)
+    if ipaddress.ip_address(text.split("/")[0]) != net.network_address:
+        raise ValueError(f"use the network address: {net}")
+    if net.prefixlen < _WIDEST_PREFIX[net.version]:
+        raise ValueError(f"networks wider than /{_WIDEST_PREFIX[net.version]} are refused")
+    return str(net)
 
 
 def parse_ip(value: str | None) -> str | None:

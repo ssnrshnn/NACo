@@ -23,11 +23,12 @@ from naco.core.passwords import hash_password, validate_user_password
 from naco.db.engine import get_db
 from naco.db.models import AdminRole, CommandSet, Group, Policy, User, UserSource
 from naco.radius.reevaluate import reevaluator
+from naco.tacacs.authz import parse_service_attribute
 
 router = APIRouter(tags=["users & groups"])
 
 USER_FIELDS = ["username", "email", "full_name", "group_id", "enabled"]
-GROUP_FIELDS = ["name", "description", "device_admin_privilege", "command_set_id"]
+GROUP_FIELDS = ["name", "description", "device_admin_privilege", "command_set_id", "device_admin_attributes"]
 
 
 # ── users ──────────────────────────────────────────────────────────────────
@@ -193,7 +194,20 @@ class GroupOut(BaseModel):
     description: str
     device_admin_privilege: int | None
     command_set_id: int | None
+    device_admin_attributes: list[str]
     members: int
+
+
+def _service_attributes(lines: list[str] | None) -> list[str] | None:
+    """Check each 'service: attribute=value' line and write it one way."""
+    if lines is None:
+        return None
+    out = []
+    for line in lines:
+        if line.strip():
+            service, pair = parse_service_attribute(line)
+            out.append(f"{service}: {pair}")
+    return out
 
 
 class GroupIn(BaseModel):
@@ -201,6 +215,9 @@ class GroupIn(BaseModel):
     description: str = Field("", max_length=255)
     device_admin_privilege: int | None = Field(None, ge=1, le=15)
     command_set_id: int | None = None
+    device_admin_attributes: list[str] = Field(default_factory=list, max_length=50)
+
+    _attributes = field_validator("device_admin_attributes")(_service_attributes)
 
 
 class GroupUpdate(BaseModel):
@@ -208,6 +225,9 @@ class GroupUpdate(BaseModel):
     description: str | None = Field(None, max_length=255)
     device_admin_privilege: int | None = Field(None, ge=1, le=15)
     command_set_id: int | None = None
+    device_admin_attributes: list[str] | None = Field(None, max_length=50)
+
+    _attributes = field_validator("device_admin_attributes")(_service_attributes)
 
 
 async def _members(db: AsyncSession, group_id: int) -> int:
@@ -234,7 +254,8 @@ async def list_groups(_: Principal = Depends(viewer), db: AsyncSession = Depends
     counts = dict((await db.execute(select(User.group_id, func.count()).group_by(User.group_id))).all())
     groups = (await db.execute(select(Group).order_by(Group.name))).scalars()
     return [GroupOut(id=g.id, name=g.name, description=g.description, device_admin_privilege=g.device_admin_privilege,
-                     command_set_id=g.command_set_id, members=counts.get(g.id, 0)) for g in groups]
+                     command_set_id=g.command_set_id, device_admin_attributes=g.device_admin_attributes or [],
+                     members=counts.get(g.id, 0)) for g in groups]
 
 
 @router.post("/groups", response_model=GroupOut, status_code=201)
@@ -262,7 +283,7 @@ async def update_group(group_id: int, body: GroupUpdate, _: Principal = Depends(
         await _check_command_set(db, changes["command_set_id"])
     before = snapshot(group, GROUP_FIELDS)
     for key, value in changes.items():
-        if key == "name" and value is None:
+        if key in ("name", "device_admin_attributes") and value is None:
             continue
         setattr(group, key, value)
     audit.record("group.update", "group", group.id, group.name, diff(before, snapshot(group, GROUP_FIELDS)))

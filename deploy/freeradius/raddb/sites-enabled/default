@@ -19,16 +19,18 @@ server default {
 				updated = return
 			}
 		}
-		# MAB: the NAS says so (Call-Check), or the classic User-Name ==
-		# User-Password == MAC form. NACo additionally requires the MAC to
-		# equal Calling-Station-Id.
+		# MAB: the NAS says so (Call-Check), or a MAC as User-Name with the
+		# same MAC — or no password at all (MikroTik, UniFi and Omada can send
+		# none) — as User-Password. A MAC is no secret either way; NACo
+		# additionally requires it to equal Calling-Station-Id.
 		elsif (&Service-Type && &Service-Type == Call-Check) {
 			naco_mab
 		}
-		elsif (&User-Password && \
-		       (&User-Name =~ /^([0-9a-f]{2}[-:]?){5}[0-9a-f]{2}$/i || \
-		        &User-Name =~ /^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$/i) && \
-		       ("%{tolower:%{User-Password}}" == "%{tolower:%{User-Name}}")) {
+		elsif ((&User-Name =~ /^[0-9a-f]{2}([-:. ]?[0-9a-f]{2}){5}$/i || \
+		        &User-Name =~ /^[0-9a-f]{4}[-:. ][0-9a-f]{4}[-:. ][0-9a-f]{4}$/i || \
+		        &User-Name =~ /^[0-9a-f]{6}[-:. ][0-9a-f]{6}$/i) && \
+		       (!&User-Password || &User-Password == "" || \
+		        ("%{tolower:%{User-Password}}" == "%{tolower:%{User-Name}}"))) {
 			naco_mab
 		}
 		elsif (&User-Password) {
@@ -41,6 +43,22 @@ server default {
 		}
 		else {
 			reject
+		}
+
+		# A NAS probing with Status-Server (Ruckus ICX does by default) gets
+		# an answer only while NACo can decide; otherwise it marks this
+		# server dead at once.
+		Autz-Type Status-Server {
+			naco_token
+			naco_status {
+				fail = 1
+				invalid = 1
+				notfound = 1
+				userlock = 1
+			}
+			if (!ok) {
+				fail
+			}
 		}
 	}
 

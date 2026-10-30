@@ -70,7 +70,7 @@ def _quote(value: str) -> str:
 def radclient(attrs: dict[str, str], *, kind: str = "auth", port: int = 1812, secret: str = SECRET,
               message_authenticator: bool = True, service: str = "client", wait: int = 3) -> str:
     lines = [f"{k} = {_quote(v)}" for k, v in attrs.items()]
-    if message_authenticator and kind == "auth":
+    if message_authenticator and kind in ("auth", "status"):
         lines.append("Message-Authenticator = 0x00")
     proc = in_client(f"radclient -x -r 1 -t {wait} {RADIUS}:{port} {kind} {secret}", "\n".join(lines) + "\n",
                      service=service)
@@ -151,6 +151,27 @@ def test_mab_unknown_device_is_onboarded_as_pending():
     out = mab("02:00:00:00:00:50")
     assert "Received Access-Accept" in out and '"99"' in out, out
     assert state()["devices"]["02:00:00:00:00:50"] == "PENDING"
+
+
+@pytest.mark.parametrize("user,password,station", [
+    ("0200-0000-0060", "0200-0000-0060", "0200-0000-0060"),   # Huawei / H3C / Comware, no Service-Type
+    ("020000-000061", "020000-000061", "02-00-00-00-00-61"),  # ArubaOS-Switch single-dash
+    ("0200:0000:0062", "0200:0000:0062", "02:00:00:00:00:62"),  # MikroTik
+    ("02.00.00.00.00.63", "02.00.00.00.00.63", "02-00-00-00-00-63"),  # Ruckus ICX
+    ("020000000064", "", "02-00-00-00-00-64"),                # empty password (MikroTik, UniFi, Omada)
+    ("020000000065", None, "02-00-00-00-00-65"),              # no password at all
+])
+def test_mab_vendor_formats(user, password, station):
+    attrs = {"User-Name": user, "Calling-Station-Id": station}
+    if password is not None:
+        attrs["User-Password"] = password
+    out = radclient(attrs)
+    assert "Received Access-Accept" in out and '"99"' in out, out
+
+
+def test_a_mac_with_another_password_is_no_mab():
+    out = radclient({"User-Name": "020000000066", "User-Password": "guess", "Calling-Station-Id": "02-00-00-00-00-66"})
+    assert "Received Access-Reject" in out and state()["logs"][0]["method"] == "PAP", out
 
 
 def test_mab_blocked_device():
@@ -283,6 +304,7 @@ def test_zz_no_answer_when_naco_cannot_be_asked():
     # FreeRADIUS knows the NAS already (as with any switch in use); an
     # unknown NAS is ignored anyway while NACo cannot be asked.
     assert "Received Access-Accept" in radclient({"User-Name": "alice", "User-Password": ALICE_PW})
+    assert "Received Access-Accept" in radclient({}, kind="status")
     compose("stop", "naco")
     try:
         # Long enough to see a reject: reaching a stopped NACo takes seconds.
@@ -296,6 +318,8 @@ def test_zz_no_answer_when_naco_cannot_be_asked():
         acct = radclient({"Acct-Session-Id": "E2E-2", "Acct-Status-Type": "Start", "User-Name": "alice"},
                          kind="acct", port=1813)
         assert "Received Accounting-Response" not in acct, acct
+        status = radclient({}, kind="status", wait=6)  # a Status-Server probe: dead right away
+        assert "Received" not in status, status
     finally:
         compose("start", "naco")
     for _ in range(30):  # answers again as soon as NACo is back

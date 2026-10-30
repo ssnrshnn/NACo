@@ -85,6 +85,11 @@ def create_internal_app() -> FastAPI:
             "control:FreeRADIUS-Client-Require-MA": "yes" if found.require_message_authenticator else "no",
         }))
 
+    @app.get("/aaa/status", dependencies=guarded)
+    async def status() -> Response:
+        """FreeRADIUS answers a NAS's Status-Server probe only when this answers."""
+        return Response(status_code=204)
+
     @app.post("/aaa/authenticate", dependencies=guarded)
     async def authenticate(request: Request) -> Response:
         attrs = await _attrs(request)

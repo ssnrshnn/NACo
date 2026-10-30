@@ -63,12 +63,34 @@ line vty 0 15
 ```
 
 Keep a local fallback account and test from a second session before you
-close the first one. With `privilege 15` in the user's group, IOS starts the
-session in privileged EXEC (`priv-lvl=15`).
+close the first one. On IOS-XE the fallback is used only when NACo does not
+answer; a login NACo refuses is refused. Other vendors differ — the vendor
+pages say. With `privilege 15` in the user's group, IOS starts the session
+in privileged EXEC (`priv-lvl=15`).
 
 ## Other vendors
 
-Juniper (`system tacplus-server`), Aruba AOS-CX (`tacacs-server host`),
-Arista (`tacacs-server host`), Fortinet, Palo Alto and others work the same
-way: point them at the NACo host, port 49, with the client's key; enable
-command authorization and accounting where the device offers it.
+Devices ask NACo for authorization of a *service*. Cisco-style devices ask
+for `shell`, and NACo answers with the group's privilege level
+(`priv-lvl=N`) and checks each command against the group's command set.
+
+Others ask for their own service and expect their own attributes. Give the
+group one line per attribute under *Groups → TACACS+ attributes for other
+vendors*, as `service: attribute=value` (or `attribute*value` for an
+optional one). Members receive exactly those lines for that service; a
+service with no line is refused. Lines for `shell` are sent along with
+`priv-lvl` when a session starts.
+
+| Device | Service it asks for | Lines on the NACo group |
+|---|---|---|
+| Cisco IOS, IOS-XE, Arista EOS, Aruba AOS-CX and AOS-S | `shell` | none — the privilege level is enough |
+| Cisco NX-OS | `shell` | a role, e.g. `shell: shell:roles*"network-admin"` (`*`: optional, so IOS-XE logins of the same group ignore it) |
+| HPE Comware, H3C | `shell` | a role, e.g. `shell: roles="network-admin"` |
+| Juniper Junos | `junos-exec` | the login class template, e.g. `junos-exec: local-user-name=remote-admin` |
+| Fortinet FortiOS (with authorization enabled) | `fortigate` | the admin profile, e.g. `fortigate: admin_prof=super_admin` |
+| Dell OS10 | `ppp` (`protocol=ip`) | the role, e.g. `ppp: shell:roles=sysadmin` |
+| Ruckus ICX | `shell` | none — level 15 is super-user, 1–14 port-configuration; for read-only try `shell: foundry-privlvl=5` (check in the pilot) |
+
+The exact attribute names and values each device expects, and its
+configuration with a local fallback, are on the [vendor pages](network-devices.md#vendors).
+MikroTik has no TACACS+.

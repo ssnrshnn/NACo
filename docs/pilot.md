@@ -20,8 +20,8 @@ each step shows in *Logs* whether it works. Allow half a day.
 
 ```bash
 git clone https://github.com/ssnrshnn/NACo.git && cd NACo
-NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.2 \
-NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.2 ./quickstart.sh
+NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.1.0 \
+NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.1.0 ./quickstart.sh
 docker compose exec naco nacoctl check-config
 ```
 
@@ -32,8 +32,9 @@ TACACS+), NACo → switch UDP 3799.
 ## 3. Describe the pilot in NACo
 
 1. **RADIUS clients** — the switch, with the address its RADIUS packets come
-   from (`ip radius source-interface` on Cisco) and a shared secret of at
-   least 16 characters.
+   from (`ip radius source-interface` on Cisco), a shared secret of at
+   least 16 characters, and its *device type* (see the
+   [vendor pages](network-devices.md#vendors)).
 2. **Groups and users** — a group `staff` and two test users, or connect
    [LDAP / AD](configuration.md).
 3. **Policies** — for example:
@@ -51,14 +52,12 @@ TACACS+), NACo → switch UDP 3799.
 
 ## 4. One port, monitor mode
 
-Configure RADIUS globally as in [network devices](network-devices.md) —
-without its `interface range` block — and put **one** port under 802.1X,
-in monitor mode: the switch asks NACo and
-logs the answer, and lets traffic through whatever it is. On Cisco IOS-XE:
+Configure RADIUS globally as on your [vendor page](network-devices.md#vendors)
+— without its port range — and put **one** port under 802.1X, in monitor
+mode: the switch asks NACo and logs the answer, and lets traffic through
+whatever it is. On Cisco IOS-XE with `authentication` commands:
 
 ```text
-test aaa group NACO-GROUP <test-user> <password> new-code
-!
 interface GigabitEthernet1/0/48
  switchport mode access
  switchport access vlan <onboarding>
@@ -72,9 +71,10 @@ interface GigabitEthernet1/0/48
  spanning-tree portfast
 ```
 
-`test aaa` must report *User successfully authenticated*, and the attempt
-appears in *Logs*. Then connect each test device to the port and configure
-its supplicant ([802.1X and certificates](eap.md)):
+Connect each test device to the port and configure its supplicant
+([802.1X and certificates](eap.md)). (Cisco's `test aaa` command sends no
+Message-Authenticator, so NACo ignores it unless the client is marked
+Legacy NAS — test with a real device instead.)
 
 | Device | Method | Trust |
 |---|---|---|
@@ -92,13 +92,17 @@ received. A reject explains itself in *Logs*; reproduce it in the
 
 NACo never lets a device in without a decision. When it cannot decide —
 the host is down, or NACo is stopped, restarting or failing — the switch's
-requests get **no answer**. After a few unanswered tries the switch marks
-the server dead and applies its *server dead* action: the critical VLAN,
-for example. Without one, new devices get no access until NACo is back.
-Devices already connected normally keep their session — check how your
-switch treats re-authentication while the server is dead.
+requests and Status-Server probes get **no answer** (within a minute at
+most; see [network devices](network-devices.md#when-naco-cannot-decide)).
+After a few unanswered tries the switch marks the server dead and applies
+its *server dead* action: the critical VLAN, for example. Without one, new
+devices get no access until NACo is back. Devices already connected
+normally keep their session — check how your switch treats
+re-authentication while the server is dead. Not every device has a critical
+VLAN — wireless controllers mostly do not; the vendor pages say.
 
-Configure the dead-server behaviour on the switch and test it:
+Configure the dead-server behaviour on the switch and test it — on Cisco
+IOS-XE:
 
 ```text
 radius server NACO
@@ -113,9 +117,9 @@ interface GigabitEthernet1/0/48
 ```
 
 (The probe appears in *Logs* as a rejected `naco-probe` — expected.) Stop
-NACo (`docker compose stop naco`), connect a device, check that it lands in
-the critical VLAN, then start NACo again and watch the port
-re-authenticate.
+NACo (`docker compose stop naco`), wait a minute, connect a device, check
+that it lands in the critical VLAN, then start NACo again and watch the
+port re-authenticate.
 
 ## 6. Enforce
 
@@ -128,8 +132,12 @@ that changes reach live sessions (Change of Authorization):
 - change the VLAN of the `staff` policy — sessions it decided move;
 - disable a test user — their session ends.
 
-If a change does not take effect, check the switch's `aaa server radius
-dynamic-author` client and that UDP 3799 is open from the NACo host.
+*Sessions* shows whether the device acknowledged each disconnect. On a
+timeout, check the device's dynamic-authorization settings (Cisco: `aaa
+server radius dynamic-author`) and that the CoA port is open from the NACo
+host; on a NAK, check the client's device type. A wired MAB device whose
+VLAN changed keeps its old IP address until it renews it — unplug it once
+during the pilot.
 
 ## 7. Switch logins (optional)
 

@@ -28,7 +28,13 @@ from naco.db.models import (
     User,
 )
 from naco.tacacs import protocol as p
-from naco.tacacs.authz import CompiledCommandSet, command_allowed, command_line, parse_args
+from naco.tacacs.authz import (
+    CompiledCommandSet,
+    command_allowed,
+    command_line,
+    parse_args,
+    parse_service_attribute,
+)
 from naco.tacacs.server import TacacsServer
 
 KEY = "tacacs-shared-key-123"
@@ -135,13 +141,17 @@ async def tacacs(app_db):
         net = Group(name="netadmins", device_admin_privilege=15)
         helpdesk = Group(name="helpdesk", device_admin_privilege=7, command_set_id=ro.id)
         staff = Group(name="staff")
-        db.add_all([net, helpdesk, staff])
+        vendors = Group(name="vendors", device_admin_privilege=15, device_admin_attributes=[
+            "junos-exec: local-user-name=super-user", "fortigate: admin_prof=super_admin",
+            "fortigate: memberof=netops", 'shell: shell:roles="network-admin"'])
+        db.add_all([net, helpdesk, staff, vendors])
         await db.flush()
         db.add_all([
             TacacsClient(name="core-sw", ip_address="127.0.0.1", key=KEY),
             User(username="neo", password_hash=hash_password_sync("neo-password"), group_id=net.id),
             User(username="hd", password_hash=hash_password_sync("hd-password"), group_id=helpdesk.id),
             User(username="alice", password_hash=hash_password_sync("alice-password"), group_id=staff.id),
+            User(username="mv", password_hash=hash_password_sync("mv-password"), group_id=vendors.id),
             User(username="off", password_hash=hash_password_sync("off-password"), group_id=net.id, enabled=False),
         ])
         await db.commit()
@@ -193,6 +203,41 @@ async def test_authorization_interop(tacacs):
     assert not (await asyncio.to_thread(author, "neo", ["service=ppp", "protocol=ip"]))[0]
     commands = [(r.command, r.result) for r in await logs(tacacs, TacacsKind.AUTHOR)]
     assert ("configure terminal", "FAIL") in commands and ("show version", "PASS") in commands
+
+
+async def test_other_services_get_the_groups_attributes(tacacs):
+    def author(user, args):
+        reply = client(tacacs).authorize(user, arguments=[a.encode() for a in args])
+        return reply.valid, [a.decode() for a in (reply.arguments or [])]
+
+    assert await asyncio.to_thread(author, "mv", ["service=junos-exec"]) == (True, ["local-user-name=super-user"])
+    assert await asyncio.to_thread(author, "mv", ["service=FortiGate", "cmd*"]) == \
+        (True, ["admin_prof=super_admin", "memberof=netops"])
+    assert await asyncio.to_thread(author, "mv", ["service=shell", "cmd="]) == \
+        (True, ["priv-lvl=15", 'shell:roles="network-admin"'])
+    assert not (await asyncio.to_thread(author, "mv", ["service=PaloAlto"]))[0]   # nothing configured for it
+    assert not (await asyncio.to_thread(author, "neo", ["service=junos-exec"]))[0]
+    assert not (await asyncio.to_thread(author, "alice", ["service=junos-exec"]))[0]  # not a device admin
+    reasons = {r.command: (r.result, r.reason) for r in await logs(tacacs, TacacsKind.AUTHOR) if r.username == "mv"}
+    assert reasons["junos-exec"] == ("PASS", "local-user-name=super-user")
+    assert reasons["PaloAlto"][0] == "FAIL" and "no attributes for service PaloAlto" in reasons["PaloAlto"][1]
+
+
+@pytest.mark.parametrize("line,parsed", [
+    ("junos-exec: local-user-name=super-user", ("junos-exec", "local-user-name=super-user")),
+    ("  fortigate :admin_prof = super_admin ", ("fortigate", "admin_prof=super_admin")),
+    ('shell: shell:roles="network-admin vdc-admin"', ("shell", 'shell:roles="network-admin vdc-admin"')),
+    ("PaloAlto: PaloAlto-Admin-Role*superreader", ("PaloAlto", "PaloAlto-Admin-Role*superreader")),
+])
+def test_service_attribute_lines(line, parsed):
+    assert parse_service_attribute(line) == parsed
+
+
+@pytest.mark.parametrize("line", ["", "junos-exec", "junos-exec:", ": a=b", "junos exec: a=b", "shell: priv-lvl=15",
+                                  "x: a=" + "v" * 300, "x: a=b\nc"])
+def test_bad_service_attribute_lines(line):
+    with pytest.raises(ValueError):
+        parse_service_attribute(line)
 
 
 async def test_accounting_interop(tacacs):

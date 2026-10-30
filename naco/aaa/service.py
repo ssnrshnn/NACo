@@ -20,7 +20,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.aaa.rlm import Attrs
@@ -43,6 +43,7 @@ from naco.db.models import (
 )
 from naco.policy import engine as policy_engine
 from naco.policy.context import AUTH_METHODS, Decision, deny
+from naco.radius.clients import find_nas
 
 log = logging.getLogger(__name__)
 trail = logging.getLogger("naco.trail")
@@ -104,10 +105,8 @@ async def lookup_client(ip: str) -> ClientDef | None:
     if addr is None:
         return None
     async with session_factory()() as db:
-        nas = (await db.execute(
-            select(NasClient).where(NasClient.ip_address == addr, NasClient.enabled.is_(True))
-        )).scalar_one_or_none()
-    if nas is None:
+        nas = await find_nas(db, addr)
+    if nas is None or not nas.enabled:
         return None
     return ClientDef(nas.name, addr, nas.secret, nas.require_message_authenticator)
 
@@ -125,10 +124,29 @@ class RequestInfo:
     calling_station: str
 
 
+# Where controllers that do not put the SSID in Called-Station-Id send it.
+_SSID_ATTRIBUTES = ("Called-Station-SSID", "Aruba-Essid-Name", "Ruckus-SSID", "Fortinet-SSID",
+                    "Trapeze-SSID", "TP-CAPWAP-SSID")
+
+
+def _ssid(attrs: Attrs) -> str | None:
+    _, ssid = parse_called_station(attrs.get("Called-Station-Id"))
+    if ssid:
+        return ssid
+    for name in _SSID_ATTRIBUTES:
+        if value := (attrs.get(name) or "").strip():
+            return value[:64]
+    for pair in attrs.all("Cisco-AVPair"):
+        key, _, value = pair.partition("=")
+        if key.strip().lower() == "cisco-wlan-ssid" and value.strip():
+            return value.strip()[:64]
+    return None
+
+
 def _request_info(attrs: Attrs) -> RequestInfo:
     method = attrs.get("NACo-Auth-Method")
     calling = attrs.get("Calling-Station-Id") or ""
-    _, ssid = parse_called_station(attrs.get("Called-Station-Id"))
+    ssid = _ssid(attrs)
     return RequestInfo(
         method=method if method in AUTH_METHODS else None,
         # Set by our FreeRADIUS config from the packet's source address;
@@ -222,9 +240,7 @@ async def authenticate(attrs: Attrs) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _nas(db: AsyncSession, ip: str) -> NasClient | None:
-    if not ip:
-        return None
-    return (await db.execute(select(NasClient).where(NasClient.ip_address == ip))).scalar_one_or_none()
+    return await find_nas(db, ip)
 
 
 async def guest_active(db: AsyncSession, mac: str, now: datetime) -> bool:
@@ -315,7 +331,13 @@ def _octets(attrs: Attrs, base: str, giga: str) -> int | None:
 
 
 async def _latest_accept(db: AsyncSession, nas_ip: str, mac: str | None, username: str) -> AuthLog | None:
-    query = select(AuthLog).where(AuthLog.nas_ip == nas_ip, AuthLog.result == AuthResult.ACCEPT,
+    same_nas = AuthLog.nas_ip == nas_ip
+    nas = await find_nas(db, nas_ip)
+    if nas is not None and "/" in nas.ip_address:
+        # Access points of one network client share decisions: a client that
+        # roams to another AP without authenticating again keeps its context.
+        same_nas = or_(same_nas, AuthLog.nas_name == nas.name)
+    query = select(AuthLog).where(same_nas, AuthLog.result == AuthResult.ACCEPT,
                                   AuthLog.timestamp > utcnow() - timedelta(hours=24))
     if mac:
         query = query.where(AuthLog.mac_address == mac)
@@ -324,6 +346,15 @@ async def _latest_accept(db: AsyncSession, nas_ip: str, mac: str | None, usernam
     else:
         return None
     return (await db.execute(query.order_by(AuthLog.id.desc()).limit(1))).scalar_one_or_none()
+
+
+def _audit_session_id(attrs: Attrs) -> str:
+    """Cisco's own session id (Cisco-AVPair audit-session-id=…), used by Cisco and Meraki CoA."""
+    for pair in attrs.all("Cisco-AVPair"):
+        key, _, value = pair.partition("=")
+        if key.strip().lower() == "audit-session-id":
+            return value.strip()[:64]
+    return ""
 
 
 async def accounting(attrs: Attrs) -> None:
@@ -362,6 +393,9 @@ async def accounting(attrs: Attrs) -> None:
         acct_user = (attrs.get("User-Name") or "")[:64]
         session.acct_username = acct_user or session.acct_username
         session.calling_station_id = req.calling_station or session.calling_station_id
+        session.nas_ip_address = parse_ip(attrs.get("NAS-IP-Address")) or session.nas_ip_address
+        session.nas_identifier = (attrs.get("NAS-Identifier") or "")[:64] or session.nas_identifier
+        session.audit_session_id = _audit_session_id(attrs) or session.audit_session_id
         session.mac_address = req.mac or session.mac_address
         framed = parse_ip(attrs.get("Framed-IP-Address")) or parse_ip(attrs.get("Framed-IPv6-Address"))
         if framed:

@@ -125,6 +125,23 @@ async def test_ipv6_client(client):
     assert body["control:FreeRADIUS-Client-Require-MA"]["value"] == "no"
 
 
+async def test_clients_by_network_narrowest_first(client, world):
+    async with world() as db:
+        db.add_all([NasClient(name="aps", ip_address="10.0.20.0/24", secret="ap-shared-secret-1"),
+                    NasClient(name="lab-aps", ip_address="10.0.20.128/25", secret="lab-shared-secret"),
+                    NasClient(name="fixed", ip_address="10.0.20.200", secret="fixed-shared-secret")])
+        await db.commit()
+    for ip, name in (("10.0.20.7", "aps"), ("10.0.20.130", "lab-aps"), ("10.0.20.200", "fixed")):
+        body = (await client.get(f"/aaa/clients/{ip}")).json()
+        assert body["control:FreeRADIUS-Client-Shortname"]["value"] == name
+        assert body["control:FreeRADIUS-Client-IP-Address"]["value"] == ip  # the device, not the network
+    assert (await client.get("/aaa/clients/10.0.21.1")).status_code == 404
+    await client.post("/aaa/authorize", json=rlm(User_Name="aabbcc000001", NACo_Auth_Method="MAB",
+                                                 NACo_NAS_IP="10.0.20.7", Calling_Station_Id="AA-BB-CC-00-00-01"))
+    (row,) = await logs(world)
+    assert (row.nas_ip, row.nas_name) == ("10.0.20.7", "aps")
+
+
 @pytest.mark.parametrize("ip", ["10.0.0.2", "10.0.0.9", "garbage"])
 async def test_unknown_or_disabled_client(client, ip):
     assert (await client.get(f"/aaa/clients/{ip}")).status_code == 404
@@ -195,6 +212,25 @@ async def test_pap_accept_with_vlan_and_attributes(client, world):
     assert (row.result, row.username, row.policy_name, row.vlan, row.ssid) == (
         AuthResult.ACCEPT, "alice", "staff", 10, "Corp")
     assert len(row.decision_digest) == 64
+
+
+@pytest.mark.parametrize("where", [
+    {"Called_Station_Id": "AABBCC000001:Corp"},
+    {"Called_Station_Id": "AA-BB-CC-00-00-01", "Aruba_Essid_Name": "Corp"},
+    {"Ruckus_SSID": "Corp"},
+    {"Fortinet_SSID": "Corp"},
+    {"Called_Station_SSID": "Corp"},
+    {"Cisco_AVPair": ["audit-session-id=0A0B", "cisco-wlan-ssid=Corp"]},
+])
+async def test_ssid_wherever_the_controller_puts_it(client, world, where):
+    await add_policy(world, "corp wifi", 10, PolicyAction.PERMIT, [{"type": "ssid", "op": "in", "value": ["Corp"]}],
+                     vlan=10)
+    await verified(client, "alice")
+    r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP", NACo_NAS_IP=NAS_IP,
+                                                     **where))
+    assert r.json()["control:NACo-Decision"]["value"] == "accept"
+    (row,) = await logs(world)
+    assert row.ssid == "Corp"
 
 
 async def test_accept_without_attributes(client, world):
@@ -398,10 +434,46 @@ async def test_numeric_status_and_duplicate_start_are_idempotent(client, world):
     assert len(await sessions(world)) == 1
 
 
+async def test_a_client_roaming_between_aps_of_one_network_keeps_its_decision(client, world):
+    async with world() as db:
+        db.add(NasClient(name="aps", ip_address="10.0.20.0/24", secret="ap-shared-secret-1"))
+        db.add(Policy(name="any device", priority=5, action=PolicyAction.PERMIT, vlan=30,
+                      conditions=[{"type": "auth_method", "value": ["MAB"]}]))
+        await db.commit()
+    mab = {"User_Name": "aabbcc000020", "NACo_Auth_Method": "MAB", "Calling_Station_Id": "AA-BB-CC-00-00-20"}
+    assert (await client.post("/aaa/authorize", json=rlm(NACo_NAS_IP="10.0.20.7", **mab))).status_code == 200
+    # Accounting arrives from the AP it roamed to, without a new authentication.
+    await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Start", Acct_Session_Id="R1",
+                                                  NACo_NAS_IP="10.0.20.8", Calling_Station_Id="AA-BB-CC-00-00-20"))
+    (s,) = await sessions(world)
+    assert (s.nas_ip, s.policy_name, s.vlan) == ("10.0.20.8", "any device", 30) and s.decision_digest
+    # A different client entry never lends its decisions.
+    await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Start", Acct_Session_Id="R2",
+                                                  NACo_NAS_IP=NAS_IP, Calling_Station_Id="AA-BB-CC-00-00-20"))
+    other = next(x for x in await sessions(world) if x.acct_session_id == "R2")
+    assert other.decision_digest == ""
+
+
+async def test_accounting_keeps_what_the_nas_needs_to_find_the_session(client, world):
+    base = {"Acct_Session_Id": "S9", "NACo_NAS_IP": NAS_IP, "Calling_Station_Id": "AA-BB-CC-00-00-09"}
+    await client.post("/aaa/accounting", json=rlm(
+        Acct_Status_Type="Start", NAS_IP_Address="10.255.0.1", NAS_Identifier="core-sw01",
+        Cisco_AVPair=["service-type=Framed", "audit-session-id=0A0000010000001F2C3D4E5F"], **base))
+    await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Interim-Update", **base))  # not repeated
+    (s,) = await sessions(world)
+    assert (s.nas_ip, s.nas_ip_address, s.nas_identifier, s.audit_session_id) == (
+        NAS_IP, "10.255.0.1", "core-sw01", "0A0000010000001F2C3D4E5F")
+
+
 async def test_accounting_without_nas_source_is_ignored(client, world):
     r = await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Start", Acct_Session_Id="x"))
     assert r.status_code == 204
     assert await sessions(world) == []
+
+
+async def test_status_for_status_server_probes(client):
+    assert (await client.get("/aaa/status")).status_code == 204
+    assert (await client.get("/aaa/status", headers={"Authorization": "Bearer wrong"})).status_code == 403
 
 
 async def test_metrics_endpoint_is_open_and_renders(client):

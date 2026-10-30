@@ -31,6 +31,7 @@ from naco.core.timeutil import local_now
 from naco.db.engine import get_db
 from naco.db.models import AdminRole, Device, Group, NasClient, User, UserSource
 from naco.radius.reevaluate import reevaluator
+from naco.radius.vendors import VENDORS
 
 router = APIRouter(tags=["import & export"])
 
@@ -70,8 +71,8 @@ async def export(kind: Literal["users", "devices", "nas"], _: Principal = Depend
                     [[d.mac_address, d.status, d.device_type, d.vendor, d.description, d.notes,
                       d.last_seen.isoformat()] for d in devices], kind)
     nas = (await db.execute(select(NasClient).order_by(NasClient.name))).scalars()
-    return _csv(["name", "ip_address", "coa_port", "require_message_authenticator", "description", "enabled"],
-                [[n.name, n.ip_address, n.coa_port, n.require_message_authenticator, n.description, n.enabled]
+    return _csv(["name", "ip_address", "vendor", "coa_port", "require_message_authenticator", "description", "enabled"],
+                [[n.name, n.ip_address, n.vendor, n.coa_port, n.require_message_authenticator, n.description, n.enabled]
                  for n in nas], kind)
 
 
@@ -199,7 +200,8 @@ async def import_nas(file: UploadFile, _: Principal = Depends(superuser),
     existing_names = set((await db.execute(select(NasClient.name))).scalars())
 
     def build(row: dict[str, str]) -> NasIn:
-        data: dict[str, Any] = {k: row[k] for k in ("name", "ip_address", "secret", "description") if row.get(k)}
+        data: dict[str, Any] = {k: row[k] for k in ("name", "ip_address", "secret", "vendor", "description")
+                                if row.get(k)}
         if row.get("coa_port"):
             data["coa_port"] = row["coa_port"]
         for flag in ("require_message_authenticator", "enabled"):
@@ -212,7 +214,7 @@ async def import_nas(file: UploadFile, _: Principal = Depends(superuser),
 
     created, skipped, errors = await _import(rows, build, existing_ips, lambda item: item.ip_address)
     for _, body in created:
-        db.add(NasClient(**body.model_dump()))
+        db.add(NasClient(**{**body.model_dump(), "coa_port": body.coa_port or VENDORS[body.vendor].coa_port}))
     audit.record("import.nas", "nas", "", "", {"created": len(created), "skipped": skipped, "errors": len(errors)})
     await commit_or_conflict(db, "NAS clients changed while importing — run the import again")
     return ImportResult(created=len(created), skipped=skipped, errors=errors)

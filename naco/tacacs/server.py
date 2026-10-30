@@ -35,6 +35,7 @@ from naco.tacacs.authz import (
     load_command_set,
     parse_args,
     privilege_allowed,
+    service_attributes,
 )
 
 log = logging.getLogger(__name__)
@@ -182,15 +183,25 @@ class _Connection:
         if not rights.allowed:
             return await deny(rights.reason)
         assert user is not None
-        if attrs.get("service", "").lower() != "shell":
-            return await deny(f"service {attrs.get('service', '?')} is not offered")
+        service = attrs.get("service", "")
+        if service.lower() != "shell":
+            # Juniper (junos-exec), Fortinet (fortigate), Dell OS10 (ppp) …:
+            # only what the group spells out for that service.
+            extra = service_attributes(user, service)
+            if not extra:
+                line = service or "?"
+                return await deny(f"no attributes for service {line} in group {user.group_name}")
+            await self.record(TacacsKind.AUTHOR, username, req.rem_addr, req.port, req.priv_lvl, service, "PASS",
+                              ", ".join(extra)[:255])
+            return p.author_reply(p.AUTHOR_PASS_ADD, extra)
         level = privilege_allowed(user, req.priv_lvl)
         if not level.allowed:
             return await deny(level.reason)
         if not cmd:  # exec/shell start: tell the device the user's level
             await self.record(TacacsKind.AUTHOR, username, req.rem_addr, req.port, req.priv_lvl, line, "PASS",
                               f"priv-lvl {user.device_admin_privilege}")
-            return p.author_reply(p.AUTHOR_PASS_ADD, [f"priv-lvl={user.device_admin_privilege}"])
+            return p.author_reply(p.AUTHOR_PASS_ADD, [f"priv-lvl={user.device_admin_privilege}",
+                                                      *service_attributes(user, "shell")])
         async with session_factory()() as db:
             command_set = await load_command_set(db, user.command_set_id)
         verdict = command_allowed(line, command_set)

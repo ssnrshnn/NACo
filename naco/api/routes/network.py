@@ -16,13 +16,14 @@ from naco.api.common import commit_or_conflict, flush_or_conflict, get_or_404, s
 from naco.api.deps import Principal, superuser, viewer
 from naco.api.errors import ApiError
 from naco.config import get_config
-from naco.core.netutils import parse_ip
+from naco.core.netutils import parse_client_address, parse_ip
 from naco.db.engine import get_db
 from naco.db.models import CommandAction, CommandRule, CommandSet, Group, NasClient, TacacsClient
+from naco.radius.vendors import DEFAULT_VENDOR, VENDORS
 
 router = APIRouter(tags=["network devices"])
 
-NAS_FIELDS = ["name", "ip_address", "coa_port", "require_message_authenticator", "description", "enabled"]
+NAS_FIELDS = ["name", "ip_address", "vendor", "coa_port", "require_message_authenticator", "description", "enabled"]
 TAC_FIELDS = ["name", "ip_address", "description", "enabled"]
 NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$"
 
@@ -44,15 +45,26 @@ def _secret(value: str) -> str:
 
 
 IpAddress = Annotated[str, AfterValidator(_ip)]
+ClientAddress = Annotated[str, AfterValidator(parse_client_address)]
 SharedSecret = Annotated[str, Field(max_length=128), AfterValidator(_secret)]
 
 
 # ── RADIUS NAS clients ─────────────────────────────────────────────────────
 
+def _vendor(value: str) -> str:
+    if value not in VENDORS:
+        raise ValueError(f"unknown vendor; one of {', '.join(VENDORS)}")
+    return value
+
+
+VendorKey = Annotated[str, AfterValidator(_vendor)]
+
+
 class NasOut(BaseModel):
     id: int
     name: str
     ip_address: str
+    vendor: str
     coa_port: int
     require_message_authenticator: bool
     description: str
@@ -62,9 +74,10 @@ class NasOut(BaseModel):
 
 class NasIn(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=NAME_PATTERN)
-    ip_address: IpAddress
+    ip_address: ClientAddress
     secret: SharedSecret
-    coa_port: int = Field(3799, ge=1, le=65535)
+    vendor: VendorKey = DEFAULT_VENDOR
+    coa_port: int | None = Field(None, ge=1, le=65535)  # default: the vendor's
     require_message_authenticator: bool = True
     description: str = Field("", max_length=255)
     enabled: bool = True
@@ -72,8 +85,9 @@ class NasIn(BaseModel):
 
 class NasUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=64, pattern=NAME_PATTERN)
-    ip_address: IpAddress | None = None
+    ip_address: ClientAddress | None = None
     secret: SharedSecret | None = None
+    vendor: VendorKey | None = None
     coa_port: int | None = Field(None, ge=1, le=65535)
     require_message_authenticator: bool | None = None
     description: str | None = Field(None, max_length=255)
@@ -88,6 +102,18 @@ def nas_out(n: NasClient) -> NasOut:
     return NasOut(**snapshot(n, NAS_FIELDS), id=n.id, created_at=n.created_at)
 
 
+class VendorOut(BaseModel):
+    key: str
+    label: str
+    coa_port: int
+
+
+@router.get("/nas/vendors", response_model=list[VendorOut])
+async def list_vendors(_: Principal = Depends(viewer)) -> list[VendorOut]:
+    """Kinds of NAS, which decide what a Disconnect-Request carries."""
+    return [VendorOut(key=k, label=v.label, coa_port=v.coa_port) for k, v in VENDORS.items()]
+
+
 @router.get("/nas", response_model=list[NasOut])
 async def list_nas(_: Principal = Depends(viewer), db: AsyncSession = Depends(get_db)) -> list[NasOut]:
     return [nas_out(n) for n in (await db.execute(select(NasClient).order_by(NasClient.name))).scalars()]
@@ -96,7 +122,9 @@ async def list_nas(_: Principal = Depends(viewer), db: AsyncSession = Depends(ge
 @router.post("/nas", response_model=NasOut, status_code=201)
 async def create_nas(body: NasIn, _: Principal = Depends(superuser),
                      audit: AuditTrail = Depends(audit_trail)) -> NasOut:
-    nas = NasClient(**body.model_dump())
+    data = body.model_dump()
+    data["coa_port"] = data["coa_port"] or VENDORS[body.vendor].coa_port
+    nas = NasClient(**data)
     audit.db.add(nas)
     await flush_or_conflict(audit.db, "a NAS with that name or address already exists")
     audit.record("nas.create", "nas", nas.id, nas.name, {**snapshot(nas, NAS_FIELDS), "secret": "***"})

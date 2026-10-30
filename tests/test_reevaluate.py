@@ -84,6 +84,16 @@ async def test_nothing_changes(world, nas):
     assert nas.received == []
 
 
+async def test_a_network_client_is_disconnected_at_the_device(world, nas):
+    async with world() as db:
+        await db.execute(update(NasClient).values(ip_address="127.0.0.0/24"))
+        await db.execute(update(Policy).where(Policy.name == "staff").values(vlan=11))
+        await db.commit()
+    s = await reevaluate(["staff VLAN"])
+    assert (s.changed, s.disconnected) == (1, 1)
+    assert disconnected(nas) == ["A1"]  # sent to 127.0.0.1, the session's NAS
+
+
 async def test_cosmetic_policy_edit_disconnects_nobody(world, nas):
     async with world() as db:
         await db.execute(update(Policy).where(Policy.name == "staff").values(
