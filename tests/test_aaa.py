@@ -434,6 +434,26 @@ async def test_numeric_status_and_duplicate_start_are_idempotent(client, world):
     assert len(await sessions(world)) == 1
 
 
+async def test_a_client_roaming_between_aps_of_one_network_keeps_its_decision(client, world):
+    async with world() as db:
+        db.add(NasClient(name="aps", ip_address="10.0.20.0/24", secret="ap-shared-secret-1"))
+        db.add(Policy(name="any device", priority=5, action=PolicyAction.PERMIT, vlan=30,
+                      conditions=[{"type": "auth_method", "value": ["MAB"]}]))
+        await db.commit()
+    mab = {"User_Name": "aabbcc000020", "NACo_Auth_Method": "MAB", "Calling_Station_Id": "AA-BB-CC-00-00-20"}
+    assert (await client.post("/aaa/authorize", json=rlm(NACo_NAS_IP="10.0.20.7", **mab))).status_code == 200
+    # Accounting arrives from the AP it roamed to, without a new authentication.
+    await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Start", Acct_Session_Id="R1",
+                                                  NACo_NAS_IP="10.0.20.8", Calling_Station_Id="AA-BB-CC-00-00-20"))
+    (s,) = await sessions(world)
+    assert (s.nas_ip, s.policy_name, s.vlan) == ("10.0.20.8", "any device", 30) and s.decision_digest
+    # A different client entry never lends its decisions.
+    await client.post("/aaa/accounting", json=rlm(Acct_Status_Type="Start", Acct_Session_Id="R2",
+                                                  NACo_NAS_IP=NAS_IP, Calling_Station_Id="AA-BB-CC-00-00-20"))
+    other = next(x for x in await sessions(world) if x.acct_session_id == "R2")
+    assert other.decision_digest == ""
+
+
 async def test_accounting_keeps_what_the_nas_needs_to_find_the_session(client, world):
     base = {"Acct_Session_Id": "S9", "NACo_NAS_IP": NAS_IP, "Calling_Station_Id": "AA-BB-CC-00-00-09"}
     await client.post("/aaa/accounting", json=rlm(

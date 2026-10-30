@@ -20,7 +20,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.aaa.rlm import Attrs
@@ -331,7 +331,13 @@ def _octets(attrs: Attrs, base: str, giga: str) -> int | None:
 
 
 async def _latest_accept(db: AsyncSession, nas_ip: str, mac: str | None, username: str) -> AuthLog | None:
-    query = select(AuthLog).where(AuthLog.nas_ip == nas_ip, AuthLog.result == AuthResult.ACCEPT,
+    same_nas = AuthLog.nas_ip == nas_ip
+    nas = await find_nas(db, nas_ip)
+    if nas is not None and "/" in nas.ip_address:
+        # Access points of one network client share decisions: a client that
+        # roams to another AP without authenticating again keeps its context.
+        same_nas = or_(same_nas, AuthLog.nas_name == nas.name)
+    query = select(AuthLog).where(same_nas, AuthLog.result == AuthResult.ACCEPT,
                                   AuthLog.timestamp > utcnow() - timedelta(hours=24))
     if mac:
         query = query.where(AuthLog.mac_address == mac)
