@@ -153,6 +153,15 @@ def test_mab_unknown_device_is_onboarded_as_pending():
     assert state()["devices"]["02:00:00:00:00:50"] == "PENDING"
 
 
+@pytest.mark.parametrize("user,station", [
+    ("0200-0000-0060", "0200-0000-0060"),     # Huawei / H3C / Comware, no Service-Type
+    ("020000-000061", "02-00-00-00-00-61"),   # ArubaOS-Switch single-dash
+])
+def test_mab_vendor_mac_formats(user, station):
+    out = radclient({"User-Name": user, "User-Password": user, "Calling-Station-Id": station})
+    assert "Received Access-Accept" in out and '"99"' in out, out
+
+
 def test_mab_blocked_device():
     assert "Received Access-Reject" in mab("02:00:00:00:00:99")
 

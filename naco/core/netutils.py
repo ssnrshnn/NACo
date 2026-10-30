@@ -5,12 +5,17 @@ import ipaddress
 import re
 from collections.abc import Iterable
 
-_MAC_FORMS = (
-    re.compile(r"^[0-9a-f]{2}([:-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}$", re.I),  # aa:bb:.. / AA-BB-..
-    re.compile(r"^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$", re.I),              # aabb.ccdd.eeff
-    re.compile(r"^[0-9a-f]{12}$", re.I),                                        # aabbccddeeff
+# Every way network devices write a MAC address (any case).
+_MAC = (
+    r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}",          # aa:bb:cc:dd:ee:ff
+    r"[0-9a-f]{2}(?:-[0-9a-f]{2}){5}",          # aa-bb-cc-dd-ee-ff
+    r"[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}",   # aabb.ccdd.eeff (Cisco)
+    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}",     # aabb-ccdd-eeff (Huawei, H3C, HPE Comware)
+    r"[0-9a-f]{6}-[0-9a-f]{6}",                 # aabbcc-ddeeff (ArubaOS-Switch)
+    r"[0-9a-f]{12}",                            # aabbccddeeff
 )
-_STATION = re.compile(r"^([0-9a-f]{2}(?:[:-][0-9a-f]{2}){5})(?::(.*))?$", re.I | re.S)
+_MAC_FORMS = tuple(re.compile(rf"^{form}$", re.I) for form in _MAC)
+_STATION = re.compile(rf"^({'|'.join(_MAC)})(?::(.*))?$", re.I | re.S)
 
 
 def normalize_mac(value: str | None) -> str | None:
@@ -31,7 +36,7 @@ def is_randomized_mac(mac: str) -> bool:
 
 
 def parse_called_station(value: str | None) -> tuple[str | None, str | None]:
-    """Split ``Called-Station-Id`` ("AA-BB-CC-DD-EE-FF:SSID") into (mac, ssid)."""
+    """Split ``Called-Station-Id`` ("AA-BB-CC-DD-EE-FF:SSID", any MAC form) into (mac, ssid)."""
     if not value:
         return None, None
     m = _STATION.match(value.strip())

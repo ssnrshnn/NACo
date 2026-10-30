@@ -27,7 +27,8 @@ server default {
 		}
 		elsif (&User-Password && \
 		       (&User-Name =~ /^([0-9a-f]{2}[-:]?){5}[0-9a-f]{2}$/i || \
-		        &User-Name =~ /^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$/i) && \
+		        &User-Name =~ /^[0-9a-f]{4}[.-][0-9a-f]{4}[.-][0-9a-f]{4}$/i || \
+		        &User-Name =~ /^[0-9a-f]{6}-[0-9a-f]{6}$/i) && \
 		       ("%{tolower:%{User-Password}}" == "%{tolower:%{User-Name}}")) {
 			naco_mab
 		}

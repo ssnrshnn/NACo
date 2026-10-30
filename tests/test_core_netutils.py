@@ -6,6 +6,8 @@ from naco.core.netutils import ip_in_any, is_randomized_mac, normalize_mac, pars
 @pytest.mark.parametrize("value", [
     "aa:bb:cc:dd:ee:ff", "AA:BB:CC:DD:EE:FF", "aa-bb-cc-dd-ee-ff", "aabb.ccdd.eeff", "AABBCCDDEEFF",
     "  aa:bb:cc:dd:ee:ff  ",
+    "aabb-ccdd-eeff", "AABB-CCDD-EEFF",  # Huawei, H3C, HPE Comware
+    "aabbcc-ddeeff", "AABBCC-DDEEFF",    # ArubaOS-Switch (ProCurve) single-dash
 ])
 def test_normalize_mac_accepts_common_forms(value):
     assert normalize_mac(value) == "aa:bb:cc:dd:ee:ff"
@@ -13,7 +15,7 @@ def test_normalize_mac_accepts_common_forms(value):
 
 @pytest.mark.parametrize("value", [
     None, "", "alice", "aa:bb:cc:dd:ee", "aa:bb-cc:dd:ee:ff", "aabbccddeeffaa", "gg:bb:cc:dd:ee:ff",
-    "aa:bb:cc:dd:ee:ff:00", "aabb.ccdd.eeff.0011",
+    "aa:bb:cc:dd:ee:ff:00", "aabb.ccdd.eeff.0011", "aabb-ccdd.eeff", "aabbc-cddeeff", "aabb-ccddeeff",
 ])
 def test_normalize_mac_rejects_everything_else(value):
     assert normalize_mac(value) is None
@@ -29,6 +31,10 @@ def test_randomized_mac():
     ("aa:bb:cc:dd:ee:ff:Corp WiFi", ("aa:bb:cc:dd:ee:ff", "Corp WiFi")),
     ("AA-BB-CC-DD-EE-FF", ("aa:bb:cc:dd:ee:ff", None)),
     ("AA-BB-CC-DD-EE-FF:", ("aa:bb:cc:dd:ee:ff", None)),
+    ("AABBCCDDEEFF:Guest", ("aa:bb:cc:dd:ee:ff", "Guest")),
+    ("aabb.ccdd.eeff:Corp", ("aa:bb:cc:dd:ee:ff", "Corp")),
+    ("aabb-ccdd-eeff:Corp", ("aa:bb:cc:dd:ee:ff", "Corp")),
+    ("aa:bb:cc:dd:ee:ff:a:b", ("aa:bb:cc:dd:ee:ff", "a:b")),
     ("not a station", (None, None)),
     ("", (None, None)),
 ])
