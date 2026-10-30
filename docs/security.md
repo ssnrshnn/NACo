@@ -70,6 +70,10 @@ encrypt them with age, see [operations](operations.md#backups)).
   CVE-2024-3596) unless a client is explicitly marked legacy.
 - Shared secrets must be at least 16 characters.
 - MAB is accepted only when the user name equals the Calling-Station-Id.
+- Only NACo's explicit decision lets a device in. When NACo cannot be asked
+  (stopped, timing out, answering an error), FreeRADIUS does not answer at
+  all, so the switch applies its own server-dead action instead of
+  treating every user as rejected.
 - EAP uses TLS 1.2 with strong ciphers; PEAP-MSCHAPv2, which would need
   reversible password hashes, is not offered. An Access-Reject never carries
   EAP-Success.

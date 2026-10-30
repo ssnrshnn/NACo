@@ -47,7 +47,16 @@ server default {
 	authenticate {
 		Auth-Type naco {
 			naco_token
-			naco
+			# 204 accept, 401 reject; anything else is no answer.
+			naco {
+				fail = 1
+				invalid = 1
+				notfound = 1
+				userlock = 1
+			}
+			if (fail || invalid || notfound || userlock) {
+				naco_unavailable
+			}
 		}
 		eap
 	}
@@ -62,7 +71,7 @@ server default {
 	}
 
 	# The decision for every method: NACo answers control:NACo-Decision
-	# (accept + VLAN and attributes, or reject); an error also rejects.
+	# (accept + VLAN and attributes, or reject). Without one, no answer.
 	post-auth {
 		if (!&NACo-Auth-Method && &EAP-Type) {
 			if (&EAP-Type == TLS) {
@@ -87,10 +96,17 @@ server default {
 			}
 		}
 		naco_token
-		naco
-		# Accept only on NACo's explicit decision. Errors and timeouts
-		# already rejected above (fail/invalid end the section).
-		if (!(&control:NACo-Decision && &control:NACo-Decision == "accept")) {
+		naco {
+			fail = 1
+			invalid = 1
+			notfound = 1
+			userlock = 1
+		}
+		# Accept only on NACo's explicit decision.
+		if (!&control:NACo-Decision) {
+			naco_unavailable
+		}
+		elsif (&control:NACo-Decision != "accept") {
 			reject
 		}
 

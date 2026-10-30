@@ -37,7 +37,20 @@ server inner-tunnel {
 	authenticate {
 		Auth-Type naco {
 			naco_token
-			naco
+			naco {
+				fail = 1
+				invalid = 1
+				notfound = 1
+				userlock = 1
+			}
+			# NACo could not be asked: the outer request stays unanswered
+			# (see naco_unavailable).
+			if (fail || invalid || notfound || userlock) {
+				update outer.control {
+					&Response-Packet-Type := Do-Not-Respond
+				}
+				reject
+			}
 			# Only the name whose password NACo has just accepted becomes
 			# the session's identity — never one from an inner accept that
 			# NACo did not decide.

@@ -25,7 +25,8 @@ rest naco {
 	}
 
 	# Connections are opened on demand: FreeRADIUS starts (and keeps
-	# running) while NACo restarts; requests in that window fail closed.
+	# running) while NACo restarts; requests in that window get no answer
+	# (policy naco_unavailable).
 	pool {
 		start = 0
 		min = 0

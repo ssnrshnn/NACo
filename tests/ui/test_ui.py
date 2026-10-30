@@ -99,6 +99,11 @@ def test_admin_ui_walkthrough(server):
         page.fill("#new", "a-much-better-passphrase")
         page.fill("#again", "a-much-better-passphrase")
         page.click("button[type=submit]")
+        page.wait_for_selector("text=Set up authenticator")
+        assert page.locator("#pw").count() == 0  # just typed it: not asked again
+        page.click("button[type=submit]")
+        page.wait_for_selector(".qr svg")
+        page.reload()  # arriving at this step afresh: confirm the password
         page.wait_for_selector("#pw")
         page.fill("#pw", "a-much-better-passphrase")
         page.click("button[type=submit]")

@@ -22,27 +22,31 @@ function passwordStep() {
     try {
       await api("POST", "/auth/password", { current_password: cur.value, new_password: nxt.value });
       const me = await api("GET", "/auth/me");
-      if (me.restricted === "totp") totpStep(); else location.href = "/";
+      if (me.restricted === "totp") totpStep(nxt.value); else location.href = "/";
     } catch (err) { error.textContent = err.message; error.classList.remove("hidden"); }
   });
   clear(body()).append(form);
   cur.focus();
 }
 
-function totpStep() {
+// `password` is known when the user has just chosen it on the previous step;
+// otherwise (a reload, or only 2FA was reset) they confirm it here.
+function totpStep(password) {
   document.querySelectorAll(".steps i").forEach((i) => i.classList.add("on"));
-  const [pw, pwInput] = field("Confirm your password", { id: "pw", type: "password", autocomplete: "current-password", required: true });
+  const [pw, pwInput] = field("Your password", { id: "pw", type: "password", autocomplete: "current-password", required: true });
   const error = h("p.text-danger.small.hidden", { role: "alert" });
+  const submit = h("button.btn.btn-accent.w-100.py-2", { type: "submit" }, "Set up authenticator");
   const start = h("form", { novalidate: true }, h("h1", "Two-factor authentication"),
     h("p.lead", "Protect this account with an authenticator app (1Password, Google Authenticator, Authy…)."),
-    pw, error, h("button.btn.btn-accent.w-100.py-2", { type: "submit" }, "Set up authenticator"));
+    password ? [] : [h("p.small.muted", "First confirm it is you with the password you sign in with."), pw],
+    error, submit);
   start.addEventListener("submit", async (e) => {
     e.preventDefault();
-    try { showQr(await api("POST", "/auth/totp/setup", { password: pwInput.value })); }
+    try { showQr(await api("POST", "/auth/totp/setup", { password: password ?? pwInput.value })); }
     catch (err) { error.textContent = err.message; error.classList.remove("hidden"); }
   });
   clear(body()).append(start);
-  pwInput.focus();
+  (password ? submit : pwInput).focus();
 }
 
 function showQr(setup) {

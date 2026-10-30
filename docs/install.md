@@ -58,6 +58,17 @@ your organization's trust store):
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt naco-root.crt
 ```
 
+The root is named *NACo Root* followed by a number, so it never collides
+with another Caddy's root that a machine already trusts. Installations
+from 3.0.0 or 3.0.1 still use Caddy's default name, which makes Firefox
+report `SEC_ERROR_BAD_SIGNATURE` on machines that trust another Caddy root.
+To give them a new CA (administrators then trust the new root):
+
+```bash
+docker compose exec caddy rm -rf /data/caddy/pki /data/caddy/certificates/local
+docker compose restart caddy
+```
+
 ### Changing the address later
 
 Edit `NACO_HOST` (and `NACO_TLS`) in `.env`, then `docker compose up -d`.
@@ -72,8 +83,8 @@ Instead of building locally, use the signed images from GitHub Container
 Registry, both with the same version. On a new host:
 
 ```bash
-NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.1 \
-NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.1 ./quickstart.sh
+NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.2 \
+NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.2 ./quickstart.sh
 ```
 
 `quickstart.sh` writes both into `.env` and pulls instead of building; on an
@@ -81,7 +92,7 @@ existing installation, change them in `.env` and run it again. Verify a
 signature with:
 
 ```bash
-cosign verify ghcr.io/ssnrshnn/naco:3.0.1 \
+cosign verify ghcr.io/ssnrshnn/naco:3.0.2 \
   --certificate-identity-regexp '^https://github.com/ssnrshnn/NACo/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
