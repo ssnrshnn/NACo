@@ -50,3 +50,4 @@ NACo.png
 # Generated EAP TLS material (quickstart.sh)
 deploy/freeradius/certs/
 site/
+dev.db
