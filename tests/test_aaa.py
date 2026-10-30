@@ -160,6 +160,17 @@ async def test_repeated_failures_are_slowed_down(client, world):
     assert (await logs(world))[-1].reason.startswith("too many failed attempts")
 
 
+async def test_a_failing_device_does_not_lock_its_owner_out(client, world):
+    for _ in range(8):  # the old phone with the old password
+        await client.post("/aaa/authenticate", json=rlm(User_Name="alice", User_Password="old",
+                                                        Calling_Station_Id="02-00-00-00-00-AA"))
+    phone = await client.post("/aaa/authenticate", json=rlm(User_Name="alice", User_Password=ALICE_PW,
+                                                            Calling_Station_Id="02-00-00-00-00-AA"))
+    laptop = await client.post("/aaa/authenticate", json=rlm(User_Name="alice", User_Password=ALICE_PW,
+                                                             Calling_Station_Id="02-00-00-00-00-BB"))
+    assert (phone.status_code, laptop.status_code) == (401, 204)
+
+
 # ── authorize ──────────────────────────────────────────────────────────────
 
 STAFF = [{"type": "group", "op": "in", "value": ["staff"]}]

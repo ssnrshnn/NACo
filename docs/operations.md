@@ -102,8 +102,9 @@ docker compose up -d && shred -u new.key
   *Administrators*, or: `docker compose exec naco nacoctl reset-password admin`.
 - **Lost the authenticator** — use a recovery code at sign-in; otherwise
   another superuser resets 2FA, or `nacoctl reset-totp admin`.
-- **Too many attempts** — sign-in is throttled per address and per account;
-  wait a few minutes.
+- **Too many attempts** — sign-in is throttled per address, and wrong
+  passwords slow down that account from that address; wait a few minutes or
+  sign in from another machine.
 
 ## Metrics
 

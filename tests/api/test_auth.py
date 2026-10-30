@@ -86,6 +86,18 @@ async def test_failed_logins_slow_down_per_user(api):
     assert int(r.headers["Retry-After"]) >= 1
 
 
+async def test_failures_from_one_address_do_not_lock_the_account_elsewhere(api):
+    await make_admin(api.sf)
+    for _ in range(5):
+        await api.post(LOGIN, json={"username": "root", "password": "wrong", "totp_code": code()})
+    elsewhere = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_public_app(), client=("198.51.100.9", 1)),
+                                  base_url=BASE)
+    r = await elsewhere.post(LOGIN, json={"username": "root", "password": "correct-horse-battery",
+                                          "totp_code": code()})
+    await elsewhere.aclose()
+    assert r.status_code == 200
+
+
 async def test_login_attempts_are_limited_per_ip(api, tmp_path, monkeypatch):
     write_config(tmp_path, monkeypatch, "security:\n  login_max_attempts: 3\n")
     for i in range(3):

@@ -45,3 +45,33 @@ def test_progressive_delay_expires_and_resets():
     assert d.delay_for("u", now=2) == 0
     d.failure("u", now=3)
     assert d.delay_for("u", now=200) == 0  # forgotten
+
+
+def test_guess_guard_slows_only_the_failing_source():
+    from naco.core.ratelimit import GuessGuard
+    g = GuessGuard(free_attempts=2, cap=30, spread=3)
+    for t in range(6):
+        g.failure("erin", "old-phone", now=t)
+    assert g.delay_for("erin", "old-phone", now=6) > 0
+    assert g.delay_for("erin", "laptop", now=6) == 0  # the owner is not locked out
+    g.success("erin", "laptop")
+    assert g.delay_for("erin", "old-phone", now=6) > 0
+
+
+def test_guess_guard_slows_the_identity_when_many_sources_fail():
+    from naco.core.ratelimit import GuessGuard
+    g = GuessGuard(free_attempts=5, cap=30, spread=3, window=100)
+    for source in ("a", "b", "c"):
+        g.failure("erin", source, now=0)
+    assert g.delay_for("erin", "fresh-source", now=0.5) > 0  # a distributed guess
+    assert g.delay_for("bob", "a", now=0.5) == 0
+    assert g.delay_for("erin", "fresh-source", now=500) == 0  # forgotten after the window
+
+
+def test_guess_guard_memory_is_bounded():
+    from naco.core.ratelimit import GuessGuard
+    g = GuessGuard(spread=2, max_keys=10)
+    for i in range(100):
+        g.failure(f"user{i}", f"src{i}", now=0)
+        g.failure("erin", f"src{i}", now=0)
+    assert len(g._sources) <= 10 and len(g._sources.get("erin", {})) <= 8

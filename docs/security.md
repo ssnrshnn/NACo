@@ -24,8 +24,12 @@ token. NACo trusts `X-Forwarded-For` only from Caddy's fixed address.
   do nothing but change the initial password and enroll an authenticator.
   One-time recovery codes are stored as bcrypt hashes; a used TOTP code
   cannot be replayed.
-- Sign-in is limited per address (10 per 5 minutes by default) and slowed
-  down per account after failures; every failure gets the same message.
+- Sign-in is limited per address (10 per 5 minutes by default). Wrong
+  passwords slow down further attempts for that account *from that address*,
+  so nobody can lock an administrator out from elsewhere; failures from many
+  addresses slow the account down everywhere. Every failure gets the same
+  message. RADIUS (per account and device) and TACACS+ logins are slowed
+  down the same way.
 - Sessions: random 256-bit tokens stored only as hashes, `HttpOnly`,
   `Secure`, `SameSite=Lax` cookies, idle (30 min) and absolute (12 h)
   timeouts. Changing the password or 2FA ends the other sessions.

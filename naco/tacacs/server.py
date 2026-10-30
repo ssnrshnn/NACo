@@ -24,7 +24,7 @@ from naco.auth.identity import authenticate_user, canonical_username, lookup_use
 from naco.config import TacacsConfig
 from naco.core.events import Event, EventType, bus
 from naco.core.metrics import REGISTRY
-from naco.core.ratelimit import ProgressiveDelay
+from naco.core.ratelimit import GuessGuard
 from naco.db.engine import session_factory
 from naco.db.models import TacacsClient, TacacsKind, TacacsLog
 from naco.tacacs import protocol as p
@@ -139,13 +139,14 @@ class _Connection:
     async def verify(self, start: p.AuthenStart, username: str, password: str) -> bytes:
         enable = start.authen_service == p.SERVICE_ENABLE
         key = canonical_username(username) or username[:64]
-        if self.server.failures.delay_for(key) > 0:
+        source = f"{self.ip}|{start.rem_addr}"
+        if self.server.failures.delay_for(key, source) > 0:
             return await self._authen_fail(start, username, "too many failed attempts — slowed down")
         result = await authenticate_user(username, password)
         if not result.ok:
-            self.server.failures.failure(key)
+            self.server.failures.failure(key, source)
             return await self._authen_fail(start, result.username, result.reason)
-        self.server.failures.success(key)
+        self.server.failures.success(key, source)
         rights = admin_rights(result.user)
         if not rights.allowed:
             return await self._authen_fail(start, result.username, rights.reason)
@@ -235,7 +236,7 @@ class _Connection:
 class TacacsServer:
     def __init__(self, cfg: TacacsConfig) -> None:
         self.cfg = cfg
-        self.failures = ProgressiveDelay(base=1.0, cap=30.0, free_attempts=5)
+        self.failures = GuessGuard()  # per user and (device, remote address)
         self._total = 0
         self._per_client: dict[str, int] = {}
         self._server: asyncio.Server | None = None

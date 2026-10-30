@@ -30,7 +30,7 @@ from naco.core.events import Event, EventType, bus
 from naco.core.metrics import REGISTRY
 from naco.core.netutils import normalize_mac, parse_called_station, parse_ip
 from naco.core.oui import vendor_for
-from naco.core.ratelimit import ProgressiveDelay
+from naco.core.ratelimit import GuessGuard
 from naco.core.timeutil import utcnow
 from naco.db.engine import session_factory
 from naco.db.models import (
@@ -53,8 +53,8 @@ CREDENTIAL_FAILURES = REGISTRY.counter(
 )
 ACCOUNTING = REGISTRY.counter("naco_radius_accounting_total", "Accounting requests", ["status"])
 
-# Per-identity slow-down of password guessing through EAP/PAP.
-_failures = ProgressiveDelay(base=1.0, cap=30.0, free_attempts=5)
+# Slows password guessing through EAP/PAP per identity and station (see GuessGuard).
+_guesses = GuessGuard()
 
 # Password methods are authorized only for a name whose password NACo itself
 # accepted moments before, from the same NAS and station. FreeRADIUS tells
@@ -67,7 +67,7 @@ _MAX_VERIFIED = 50_000
 
 
 def reset_failure_tracking() -> None:
-    _failures._state.clear()
+    _guesses.clear()
     _verified.clear()
 
 
@@ -192,15 +192,16 @@ async def authenticate(attrs: Attrs) -> bool:
     raw_name = attrs.get("User-Name") or ""
     key = canonical_username(raw_name) or raw_name[:64]
 
-    if _failures.delay_for(key) > 0:
+    source = req.mac or req.calling_station or req.nas_ip
+    if _guesses.delay_for(key, source) > 0:
         ok, reason, username = False, "too many failed attempts — slowed down", key
     else:
         result = await authenticate_user(raw_name, attrs.get("User-Password") or "")
         ok, reason, username = result.ok, result.reason, result.username
         if ok:
-            _failures.success(key)
+            _guesses.success(key, source)
         else:
-            _failures.failure(key)
+            _guesses.failure(key, source)
 
     if ok:
         if verified := canonical_username(raw_name):

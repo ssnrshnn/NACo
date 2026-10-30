@@ -16,7 +16,7 @@ from naco.api.deps import Principal, check_same_origin, client_ip, require, rest
 from naco.api.errors import ApiError
 from naco.config import get_config
 from naco.core.passwords import hash_password, validate_admin_password, verify_password, verify_password_sync
-from naco.core.ratelimit import ProgressiveDelay, SlidingWindow
+from naco.core.ratelimit import GuessGuard, SlidingWindow
 from naco.core.timeutil import utcnow
 from naco.db.engine import get_db, release
 from naco.db.models import ActorType, AdminRole, AdminSession, AdminUser
@@ -24,14 +24,14 @@ from naco.db.models import ActorType, AdminRole, AdminSession, AdminUser
 router = APIRouter(prefix="/auth", tags=["auth"])
 signed_in = require(AdminRole.VIEWER, setup_allowed=True)
 
-_per_user = ProgressiveDelay(base=1.0, cap=30.0, free_attempts=3)
+_guesses = GuessGuard(free_attempts=3)  # per account and address
 _per_ip: SlidingWindow | None = None
 
 
 def reset_throttles() -> None:
     global _per_ip
     _per_ip = None
-    _per_user._state.clear()
+    _guesses.clear()
 
 
 def _ip_window() -> SlidingWindow:
@@ -111,7 +111,7 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
     if not _ip_window().hit(ip):
         raise ApiError(429, "too many sign-in attempts — try again later",
                        headers={"Retry-After": str(get_config().security.login_window_seconds)})
-    wait = _per_user.delay_for(name)
+    wait = _guesses.delay_for(name, ip)
     if wait > 0:
         raise ApiError(429, f"too many failed attempts — wait {math.ceil(wait)} s",
                        headers={"Retry-After": str(math.ceil(wait))})
@@ -124,7 +124,7 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
         ok = await _second_factor(db, admin, body.totp_code)
 
     if not ok or admin is None:
-        _per_user.failure(name)
+        _guesses.failure(name, ip)
         # A name that is no account is not recorded: it is often a password
         # typed into the wrong field.
         row = write(db, actor=name if admin is not None else "(unknown)", actor_type=ActorType.ADMIN, ip=ip,
@@ -134,7 +134,7 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
         # One message for every failure: never reveal which factor was wrong.
         raise ApiError(401, "invalid username, password or code")
 
-    _per_user.success(name)
+    _guesses.success(name, ip)
     raw, session = await sessions.create(db, admin, ip, request.headers.get("user-agent", ""))
     admin.last_login_at = utcnow()
     row = write(db, actor=admin.username, actor_type=ActorType.ADMIN, ip=ip, action="auth.login")
