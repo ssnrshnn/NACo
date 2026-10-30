@@ -22,6 +22,7 @@ from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from naco.aaa.rlm import Attrs
+from naco.aaa.subject import subject_context
 from naco.auth.identity import UserInfo, authenticate_user, canonical_username, load_user
 from naco.core.events import Event, EventType, bus
 from naco.core.metrics import REGISTRY
@@ -34,13 +35,12 @@ from naco.db.models import (
     AuthLog,
     AuthResult,
     Device,
-    DeviceStatus,
     GuestRegistration,
     NasClient,
     RadiusSession,
 )
 from naco.policy import engine as policy_engine
-from naco.policy.context import AUTH_METHODS, AuthContext, Decision, deny
+from naco.policy.context import AUTH_METHODS, Decision, deny
 
 log = logging.getLogger(__name__)
 trail = logging.getLogger("naco.trail")
@@ -204,16 +204,6 @@ async def guest_active(db: AsyncSession, mac: str, now: datetime) -> bool:
     )))).scalar())
 
 
-def device_state(device: Device | None, is_guest: bool) -> str | None:
-    if device is None:
-        return "guest" if is_guest else None
-    if device.status is DeviceStatus.APPROVED:
-        return "approved"
-    if device.status is DeviceStatus.PENDING:
-        return "guest" if is_guest else "pending"
-    return None  # blocked never reaches policy evaluation
-
-
 async def _see_device(db: AsyncSession, mac: str, nas_ip: str, username: str, now: datetime) -> Device:
     device = (await db.execute(select(Device).where(Device.mac_address == mac))).scalar_one_or_none()
     if device is None:
@@ -254,35 +244,23 @@ async def _decide(db: AsyncSession, attrs: Attrs, req: RequestInfo, nas: NasClie
         return deny("unknown authentication method")
     if nas is None or not nas.enabled:
         return deny("unknown or disabled NAS")
+    if req.method == "MAB" and (req.mac is None or normalize_mac(attrs.get("User-Name")) != req.mac):
+        return deny("not a valid MAB request")
 
     user: UserInfo | None = None
-    if req.method == "MAB":
-        if req.mac is None or normalize_mac(attrs.get("User-Name")) != req.mac:
-            return deny("not a valid MAB request")
-    else:
-        if not username:
-            return deny("no authenticated identity")
+    if req.method != "MAB" and username:
         found = await load_user(db, username)
-        if found is None:
-            return deny("unknown user")
-        user = found[0]
-        if not user.enabled:
-            return deny("user disabled")
-
-    device = None
-    if req.mac is not None:
-        device = await _see_device(db, req.mac, req.nas_ip, username, now)
-        if device.status is DeviceStatus.BLOCKED:
-            return deny("device blocked")
+        user = found[0] if found else None
+    device = await _see_device(db, req.mac, req.nas_ip, username, now) if req.mac else None
     is_guest = req.mac is not None and await guest_active(db, req.mac, now)
 
-    ctx = AuthContext(
-        auth_method=req.method, username=username, group=user.group_name if user else None,
-        mac=req.mac, device_status=device_state(device, is_guest),
-        device_type=device.device_type if device else "", vendor=device.vendor if device else "",
+    subject = subject_context(
+        method=req.method, username=username, user=user, mac=req.mac, device=device, is_guest=is_guest,
         nas_name=nas.name, nas_ip=req.nas_ip, ssid=req.ssid, now=now,
     )
-    return await policy_engine.evaluate(db, ctx)
+    if isinstance(subject, Decision):
+        return subject
+    return await policy_engine.evaluate(db, subject)
 
 
 # ---------------------------------------------------------------------------
