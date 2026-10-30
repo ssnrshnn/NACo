@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  {% block head %}{% endblock %}
+  <title>{% block title %}Guest Wi-Fi{% endblock %} · {{ org }}</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon-32.png">
+  <link rel="stylesheet" href="/static/css/portal.css">
+</head>
+<body>
+  <main class="card" role="main">
+    <header class="brand">
+      <img src="/static/img/emblem-192.png" alt="" width="56" height="56">
+      <p class="org">{{ org }}</p>
+    </header>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="foot">Secured by NACo</footer>
+</body>
+</html>

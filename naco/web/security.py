@@ -5,6 +5,10 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+PAGE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+            "base-uri 'none'; object-src 'none'")
+
 
 class SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -18,6 +22,9 @@ class SecurityHeaders(BaseHTTPMiddleware):
         if request.url.path.startswith("/api/"):
             headers.setdefault("Cache-Control", "no-store")
             headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        else:
+            # Pages: no inline script or style, nothing from other origins.
+            headers.setdefault("Content-Security-Policy", PAGE_CSP)
         if request.url.scheme == "https":
             headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         return response
