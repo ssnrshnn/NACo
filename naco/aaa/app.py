@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from naco.aaa import service
 from naco.aaa.rlm import Attrs, reply, vlan_attributes
 from naco.config import get_secrets
+from naco.core import runtime
 from naco.core.metrics import REGISTRY
 from naco.core.netutils import parse_ip
 
@@ -42,6 +43,7 @@ def _require_token(request: Request) -> None:
     expected = get_secrets().internal_token.encode()
     if scheme.lower() != "bearer" or not hmac.compare_digest(token.strip().encode(), expected):
         raise HTTPException(status_code=403, detail="forbidden")
+    runtime.mark_aaa_request()
 
 
 async def _attrs(request: Request) -> Attrs:

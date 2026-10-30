@@ -6,10 +6,21 @@ from collections.abc import Iterator
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
-from naco.api.routes import auth, devices, health, network, policies, users
+from naco.api.routes import (
+    admin,
+    auth,
+    devices,
+    health,
+    network,
+    overview,
+    policies,
+    sessions,
+    transfer,
+    users,
+)
 
 PREFIX = "/api/v1"
-MODULES = (health, auth, users, devices, policies, network)
+MODULES = (health, auth, users, devices, policies, network, sessions, admin, transfer, overview)
 
 # Routes that are reachable without signing in.
 PUBLIC_ROUTES = {("POST", "/api/v1/auth/login"), ("GET", "/api/v1/health/live"),
