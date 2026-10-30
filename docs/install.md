@@ -58,6 +58,17 @@ your organization's trust store):
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt naco-root.crt
 ```
 
+The root is named *NACo Root* followed by a number, so it never collides
+with another Caddy's root that a machine already trusts. Installations
+from 3.0.0 or 3.0.1 still use Caddy's default name, which makes Firefox
+report `SEC_ERROR_BAD_SIGNATURE` on machines that trust another Caddy root.
+To give them a new CA (administrators then trust the new root):
+
+```bash
+docker compose exec caddy rm -rf /data/caddy/pki /data/caddy/certificates/local
+docker compose restart caddy
+```
+
 ### Changing the address later
 
 Edit `NACO_HOST` (and `NACO_TLS`) in `.env`, then `docker compose up -d`.

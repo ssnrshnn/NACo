@@ -16,6 +16,17 @@
 	# Clients send no SNI to an IP address; Caddy would then look for a
 	# certificate for the container's own address and fail the handshake.
 	default_sni {$NACO_HOST}
+	# NACo's own CA (NACO_TLS=internal). Caddy names every root and
+	# intermediate alike, with a new key each time; Firefox then checks a
+	# new certificate against another Caddy's trusted root of the same name
+	# (SEC_ERROR_BAD_SIGNATURE, no way past it). A timestamp keeps each unique.
+	pki {
+		ca local {
+			name "NACo"
+			root_cn "NACo Root {time.now.unix}"
+			intermediate_cn "NACo Intermediate {time.now.unix}"
+		}
+	}
 }
 
 {$NACO_HOST} {

@@ -91,6 +91,7 @@ jobs:
         run: |
           set -x
           docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt root.crt
+          openssl x509 -in root.crt -noout -subject | grep -q 'CN *= *NACo Root [0-9]'   # never Caddy's shared default name
           test "$(curl -s -o /dev/null -w '%{http_code}' --cacert root.crt https://127.0.0.1/login)" = 200
           test "$(curl -s -o /dev/null -w '%{http_code}' --cacert root.crt https://127.0.0.1/api/v1/health/ready)" = 200
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/portal)" = 200
