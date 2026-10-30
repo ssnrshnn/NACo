@@ -86,19 +86,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: ./quickstart.sh
-        run: ./quickstart.sh --host localhost --yes
+        run: ./quickstart.sh --host 127.0.0.1 --yes   # an IP: browsers send no SNI
       - name: The installation answers as documented
         run: |
           set -x
           docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt root.crt
-          test "$(curl -s -o /dev/null -w '%{http_code}' --cacert root.crt https://localhost/login)" = 200
-          test "$(curl -s -o /dev/null -w '%{http_code}' --cacert root.crt https://localhost/api/v1/health/ready)" = 200
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/portal)" = 200
-          test "$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost/)" = https://localhost/
-          if curl -s -m 3 http://localhost:8081/health; then exit 1; fi   # AAA API stays internal
+          test "$(curl -s -o /dev/null -w '%{http_code}' --cacert root.crt https://127.0.0.1/login)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' --cacert root.crt https://127.0.0.1/api/v1/health/ready)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/portal)" = 200
+          test "$(curl -s -o /dev/null -w '%{redirect_url}' http://127.0.0.1/)" = https://127.0.0.1/
+          if curl -s -m 3 http://127.0.0.1:8081/health; then exit 1; fi   # AAA API stays internal
           docker compose exec -T naco nacoctl check-config
           docker compose exec -T naco nacoctl backup
-          nc -z localhost 49
+          nc -z 127.0.0.1 49
       - name: Re-running quickstart keeps secrets and data
         run: |
           sha256sum .env > before
