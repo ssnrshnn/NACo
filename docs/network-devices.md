@@ -14,6 +14,10 @@ is a **RADIUS client**. Add it under *RADIUS clients* with:
 NACo picks a new client up at its first request; a changed secret or a
 disabled client takes effect within a minute.
 
+Bringing NACo into a running network? Start with [a pilot](pilot.md): one
+port in monitor mode, then the behaviour when NACo cannot be reached, then
+enforcement.
+
 ## What every device needs
 
 | | |
@@ -99,6 +103,21 @@ interface range GigabitEthernet1/0/1 - 48
 (`Framed-IP-Address`) — needed only for the guest portal. Useful reply
 attributes: `Cisco-AVPair` (a list: `["url-redirect-acl=GUEST", "url-redirect=http://nac.example.com/portal"]`),
 `Filter-Id` (a named ACL), `Session-Timeout`.
+
+When NACo cannot be reached the switch decides; give it a critical VLAN
+(see [the pilot](pilot.md#5-when-naco-cannot-be-reached)):
+
+```text
+radius server NACO
+ automate-tester username naco-probe probe-on
+radius-server dead-criteria time 5 tries 3
+radius-server deadtime 2
+!
+interface range GigabitEthernet1/0/1 - 48
+ authentication event server dead action authorize vlan <critical>
+ authentication event server dead action authorize voice
+ authentication event server alive action reinitialize
+```
 
 Switch logins over TACACS+: see [tacacs.md](tacacs.md).
 

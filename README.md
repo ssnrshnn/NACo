@@ -93,6 +93,7 @@ Details — Let's Encrypt, released images, firewalls, upgrades — are in
 | | |
 |---|---|
 | [Install and upgrade](docs/install.md) | requirements, quickstart, TLS, released images, upgrades |
+| [First deployment](docs/pilot.md) | a safe pilot: one port, monitor mode, NACo unreachable, enforcing |
 | [Network devices](docs/network-devices.md) | Cisco, Aruba, Juniper, HPE, Fortinet, MikroTik, UniFi, … |
 | [Policies](docs/policies.md) | how a decision is made, conditions, reply attributes, CoA |
 | [802.1X and certificates](docs/eap.md) | EAP methods, the EAP CA, client certificates, Windows |
