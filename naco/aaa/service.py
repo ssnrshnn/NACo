@@ -125,10 +125,29 @@ class RequestInfo:
     calling_station: str
 
 
+# Where controllers that do not put the SSID in Called-Station-Id send it.
+_SSID_ATTRIBUTES = ("Called-Station-SSID", "Aruba-Essid-Name", "Ruckus-SSID", "Fortinet-SSID",
+                    "Trapeze-SSID", "TP-CAPWAP-SSID")
+
+
+def _ssid(attrs: Attrs) -> str | None:
+    _, ssid = parse_called_station(attrs.get("Called-Station-Id"))
+    if ssid:
+        return ssid
+    for name in _SSID_ATTRIBUTES:
+        if value := (attrs.get(name) or "").strip():
+            return value[:64]
+    for pair in attrs.all("Cisco-AVPair"):
+        key, _, value = pair.partition("=")
+        if key.strip().lower() == "cisco-wlan-ssid" and value.strip():
+            return value.strip()[:64]
+    return None
+
+
 def _request_info(attrs: Attrs) -> RequestInfo:
     method = attrs.get("NACo-Auth-Method")
     calling = attrs.get("Calling-Station-Id") or ""
-    _, ssid = parse_called_station(attrs.get("Called-Station-Id"))
+    ssid = _ssid(attrs)
     return RequestInfo(
         method=method if method in AUTH_METHODS else None,
         # Set by our FreeRADIUS config from the packet's source address;

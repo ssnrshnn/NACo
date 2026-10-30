@@ -197,6 +197,25 @@ async def test_pap_accept_with_vlan_and_attributes(client, world):
     assert len(row.decision_digest) == 64
 
 
+@pytest.mark.parametrize("where", [
+    {"Called_Station_Id": "AABBCC000001:Corp"},
+    {"Called_Station_Id": "AA-BB-CC-00-00-01", "Aruba_Essid_Name": "Corp"},
+    {"Ruckus_SSID": "Corp"},
+    {"Fortinet_SSID": "Corp"},
+    {"Called_Station_SSID": "Corp"},
+    {"Cisco_AVPair": ["audit-session-id=0A0B", "cisco-wlan-ssid=Corp"]},
+])
+async def test_ssid_wherever_the_controller_puts_it(client, world, where):
+    await add_policy(world, "corp wifi", 10, PolicyAction.PERMIT, [{"type": "ssid", "op": "in", "value": ["Corp"]}],
+                     vlan=10)
+    await verified(client, "alice")
+    r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP", NACo_NAS_IP=NAS_IP,
+                                                     **where))
+    assert r.json()["control:NACo-Decision"]["value"] == "accept"
+    (row,) = await logs(world)
+    assert row.ssid == "Corp"
+
+
 async def test_accept_without_attributes(client, world):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}])
     await verified(client)
