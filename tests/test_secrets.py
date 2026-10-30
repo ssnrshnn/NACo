@@ -39,8 +39,7 @@ def test_malformed_or_plaintext_is_rejected(value):
         decrypt(value, aad="a.b", key=KEY)
 
 
-def test_default_key_comes_from_secrets(monkeypatch):
-    from naco import config
-    monkeypatch.setattr(config, "get_secrets", lambda: config.Secrets(master_key=KEY, internal_token="t" * 32))
+def test_default_key_comes_from_environment():
+    from tests.conftest import TEST_MASTER_KEY
     token = encrypt("v", aad="a.b")
-    assert decrypt(token, aad="a.b", key=KEY) == "v"
+    assert decrypt(token, aad="a.b", key=TEST_MASTER_KEY) == "v"
