@@ -2,7 +2,8 @@
 
 * port ``http_port`` (8080) — admin UI, REST API, guest portal (behind Caddy)
 * port ``internal_port`` (8081) — the AAA API FreeRADIUS calls, and /metrics
-* background: maintenance, CoA re-evaluation (and TACACS+)
+* port ``tacacs.port`` (4949) — TACACS+, when enabled
+* background: maintenance, CoA re-evaluation
 
 Startup refuses invalid configuration or secrets before touching anything.
 """
@@ -26,6 +27,7 @@ from naco.db.engine import dispose_engine, init_engine
 from naco.db.migrate import upgrade_head
 from naco.maintenance import run_maintenance
 from naco.radius.reevaluate import reevaluator
+from naco.tacacs.server import TacacsServer
 from naco.web.app import create_public_app
 
 log = logging.getLogger("naco")
@@ -60,6 +62,9 @@ async def serve(cfg: AppConfig) -> None:
         asyncio.create_task(run_maintenance(), name="maintenance"),
         asyncio.create_task(reevaluator.run_forever(), name="coa-reevaluation"),
     ]
+    tacacs = TacacsServer(cfg.tacacs) if cfg.tacacs.enabled else None
+    if tacacs is not None:
+        await tacacs.start(cfg.server.host, cfg.tacacs.port)
 
     loop = asyncio.get_running_loop()
 
@@ -71,10 +76,13 @@ async def serve(cfg: AppConfig) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop)
 
-    log.info("NACo %s — UI/API on :%d, AAA on :%d", __version__, cfg.server.http_port, cfg.server.internal_port)
+    log.info("NACo %s — UI/API on :%d, AAA on :%d%s", __version__, cfg.server.http_port, cfg.server.internal_port,
+             f", TACACS+ on :{cfg.tacacs.port}" if tacacs else "")
     try:
         await asyncio.gather(*(s.serve() for s in servers))
     finally:
+        if tacacs is not None:
+            await tacacs.stop()
         for task in background:
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)

@@ -52,6 +52,7 @@ dev = [
     "mypy>=1.13",
     "types-PyYAML",
     "pip-audit>=2.7",
+    "tacacs_plus>=2.6",  # independent TACACS+ client for interop tests
 ]
 
 [project.urls]
