@@ -63,7 +63,7 @@ Issues   = "https://github.com/ssnrshnn/NACo/issues"
 
 [project.scripts]
 naco    = "naco.main:main"
-nacoctl = "naco.cli:cli"
+nacoctl = "naco.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "naco.__version__" }
