@@ -2,6 +2,18 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+### Fixed
+
+- Firefox refused the admin panel with `SEC_ERROR_BAD_SIGNATURE` on
+  machines that trust another Caddy's root CA: NACo's CA had Caddy's
+  default name. Its root and intermediates are now named uniquely; see
+  [install](docs/install.md#trusting-the-https-certificate) to renew the CA
+  of an existing installation.
+- First sign-in no longer asks for the password again right after it was
+  chosen, on the two-factor step.
+
 ## 3.0.1 — 2026-10-30
 
 ### Fixed
