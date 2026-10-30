@@ -10,6 +10,7 @@ from naco import __version__
 from naco.api import errors
 from naco.api.router import build_router
 from naco.portal.app import router as portal_router
+from naco.web import pages
 from naco.web.security import SecurityHeaders
 
 
@@ -19,5 +20,6 @@ def create_public_app() -> FastAPI:
     app.add_middleware(SecurityHeaders)
     app.include_router(build_router())
     app.include_router(portal_router)
+    app.include_router(pages.router)
     app.mount("/static", StaticFiles(directory=str(resources.files("naco") / "web" / "static")), name="static")
     return app

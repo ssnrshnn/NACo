@@ -53,6 +53,8 @@ dev = [
     "types-PyYAML",
     "pip-audit>=2.7",
     "tacacs_plus>=2.6",  # independent TACACS+ client for interop tests
+    "playwright>=1.48",  # admin UI walkthrough (pytest -m ui)
+    "pyotp>=2.9",
 ]
 
 [project.urls]
@@ -87,8 +89,9 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "e2e: needs Docker (real FreeRADIUS); run with `pytest -m e2e`",
+    "ui: drives the admin UI in a browser (Playwright); run with `pytest -m ui`",
 ]
-addopts = "-m 'not e2e'"
+addopts = "-m 'not e2e and not ui'"
 filterwarnings = ["ignore:.*is deprecated. Please use:DeprecationWarning:ldap3"]
 
 [tool.ruff]

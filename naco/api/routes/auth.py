@@ -1,6 +1,7 @@
 """Sign-in, account setup (password + TOTP) and one's own sessions."""
 from __future__ import annotations
 
+import asyncio
 import math
 from datetime import datetime
 
@@ -64,7 +65,6 @@ async def _admin(db: AsyncSession, principal: Principal) -> AdminUser:
 
 
 async def _use_recovery_code(admin: AdminUser, code: str) -> bool:
-    import asyncio
     code = code.strip().lower()
     for i, hashed in enumerate(admin.recovery_codes):
         if await asyncio.to_thread(verify_password_sync, code, hashed):
@@ -224,7 +224,7 @@ async def totp_confirm(body: CodeIn, principal: Principal = Depends(signed_in),
         raise ApiError(422, "that code is not valid — check the time on your device")
     codes = totp.new_recovery_codes()
     admin.totp_secret, admin.totp_pending_secret, admin.totp_last_step = admin.totp_pending_secret, None, step
-    admin.recovery_codes = [await hash_password(c) for c in codes]
+    admin.recovery_codes = list(await asyncio.gather(*(hash_password(c) for c in codes)))
     await sessions.revoke_all(audit.db, admin.id, keep_id=principal.session_id)
     audit.record("auth.totp_enabled", "admin", admin.id, admin.username)
     await audit.db.commit()
