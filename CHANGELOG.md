@@ -2,7 +2,7 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 3.1.0 — 2026-10-30
 
 Support for the network devices most organizations run, from each vendor's
 documentation: a [page per vendor](docs/network-devices.md#vendors) — Cisco,

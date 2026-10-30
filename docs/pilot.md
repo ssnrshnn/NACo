@@ -20,8 +20,8 @@ each step shows in *Logs* whether it works. Allow half a day.
 
 ```bash
 git clone https://github.com/ssnrshnn/NACo.git && cd NACo
-NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.2 \
-NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.2 ./quickstart.sh
+NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.1.0 \
+NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.1.0 ./quickstart.sh
 docker compose exec naco nacoctl check-config
 ```
 
