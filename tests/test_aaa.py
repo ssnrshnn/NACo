@@ -65,6 +65,16 @@ async def client(world):
         yield c
 
 
+ALICE_PW = 'pa"ss\\wörd'
+
+
+async def verified(client, name="alice", password=ALICE_PW, **attrs):
+    """What FreeRADIUS does before authorizing a password method."""
+    r = await client.post("/aaa/authenticate", json=rlm(User_Name=name, User_Password=password,
+                                                        NACo_NAS_IP=NAS_IP, **attrs))
+    assert r.status_code == 204, r.text
+
+
 async def add_policy(sf, name, priority, action, conditions, vlan=None, attrs=None):
     async with sf() as db:
         db.add(Policy(name=name, priority=priority, action=action, conditions=conditions,
@@ -158,6 +168,7 @@ STAFF = [{"type": "group", "op": "in", "value": ["staff"]}]
 async def test_pap_accept_with_vlan_and_attributes(client, world):
     await add_policy(world, "staff", 10, PolicyAction.PERMIT, STAFF, vlan=10,
                      attrs={"Filter-Id": "staff-acl", "Cisco-AVPair": ["a=1", "b=2"]})
+    await verified(client, "Alice", Calling_Station_Id="00-1B-63-AA-BB-CC")
     r = await client.post("/aaa/authorize", json=rlm(
         User_Name="Alice", NACo_Auth_Method="PAP", NACo_NAS_IP=NAS_IP,
         Calling_Station_Id="00-1B-63-AA-BB-CC", Called_Station_Id="AA-BB-CC-00-00-01:Corp"))
@@ -176,6 +187,7 @@ async def test_pap_accept_with_vlan_and_attributes(client, world):
 
 async def test_accept_without_attributes(client, world):
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}])
+    await verified(client)
     r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP",
                                                      NACo_NAS_IP=NAS_IP))
     assert r.json() == {"control:NACo-Decision": {"value": "accept", "do_xlat": False}}
@@ -186,6 +198,7 @@ def rejected(r) -> bool:
 
 
 async def test_default_deny(client, world):
+    await verified(client)
     r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP",
                                                      NACo_NAS_IP=NAS_IP))
     assert rejected(r)
@@ -215,6 +228,7 @@ async def test_authorize_refusals(client, world, attrs, reason):
 
 async def test_ttls_uses_inner_identity(client, world):
     await add_policy(world, "staff", 10, PolicyAction.PERMIT, STAFF, vlan=10)
+    await verified(client, "CORP\\alice")
     r = await client.post("/aaa/authorize", json=rlm(
         User_Name="anonymous@corp", NACo_Inner_Identity="CORP\\alice", NACo_Auth_Method="EAP-TTLS",
         NACo_NAS_IP=NAS_IP))
@@ -284,10 +298,40 @@ async def test_explicit_deny_policy(client, world):
     await add_policy(world, "no-alice", 1, PolicyAction.DENY,
                      [{"type": "username", "op": "equals", "value": "alice"}])
     await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=5)
+    await verified(client)
     r = await client.post("/aaa/authorize", json=rlm(User_Name="alice", NACo_Auth_Method="PAP",
                                                      NACo_NAS_IP=NAS_IP))
     assert rejected(r)
     assert (await logs(world))[0].policy_name == "no-alice"
+
+
+@pytest.mark.parametrize("method", ["PAP", "EAP-TTLS", "PEAP"])
+async def test_password_methods_need_nacos_own_check(client, world, method, monkeypatch):
+    """An identity FreeRADIUS hands over is accepted only if NACo verified its
+    password just before, from the same NAS and station."""
+    await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=5)
+    ask = rlm(User_Name="anonymous" if method != "PAP" else "alice", NACo_Inner_Identity="alice",
+              NACo_Auth_Method=method, NACo_NAS_IP=NAS_IP, Calling_Station_Id="00-1B-63-AA-BB-CC")
+    assert rejected(await client.post("/aaa/authorize", json=ask))  # never verified
+    assert (await logs(world))[-1].reason == "password was not verified by NACo"
+
+    await verified(client, Calling_Station_Id="00-1B-63-AA-BB-01")  # another station
+    assert rejected(await client.post("/aaa/authorize", json=ask))
+
+    await verified(client, Calling_Station_Id="00-1B-63-AA-BB-CC")
+    assert not rejected(await client.post("/aaa/authorize", json=ask))
+
+    clock = service.time.monotonic() + service._VERIFIED_SECONDS + 1
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock)
+    assert rejected(await client.post("/aaa/authorize", json=ask))  # too long ago
+
+
+async def test_eap_tls_and_mab_need_no_password_check(client, world):
+    await add_policy(world, "all", 10, PolicyAction.PERMIT, [{"type": "always"}], vlan=5)
+    tls = rlm(User_Name="x", TLS_Client_Cert_Common_Name="alice", NACo_Auth_Method="EAP-TLS", NACo_NAS_IP=NAS_IP)
+    mab = rlm(User_Name=MAC, Calling_Station_Id=MAC, NACo_Auth_Method="MAB", NACo_NAS_IP=NAS_IP)
+    assert not rejected(await client.post("/aaa/authorize", json=tls))
+    assert not rejected(await client.post("/aaa/authorize", json=mab))
 
 
 # ── accounting ─────────────────────────────────────────────────────────────
@@ -299,6 +343,7 @@ async def sessions(sf):
 
 async def test_accounting_lifecycle_with_context(client, world):
     await add_policy(world, "staff", 10, PolicyAction.PERMIT, STAFF, vlan=10)
+    await verified(client, Calling_Station_Id="00-1B-63-AA-BB-CC")
     await client.post("/aaa/authorize", json=rlm(
         User_Name="anonymous", NACo_Inner_Identity="alice", NACo_Auth_Method="PEAP", NACo_NAS_IP=NAS_IP,
         Calling_Station_Id="00-1B-63-AA-BB-CC", Called_Station_Id="AA-BB-CC-00-00-01:Corp"))

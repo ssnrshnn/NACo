@@ -83,6 +83,9 @@ def eapol(conf: str, mac: str = "02:00:00:00:00:01") -> bool:
     if proc.returncode != 0 and "CTRL-EVENT-EAP-SUCCESS" in proc.stdout:
         # A RADIUS reject must never deliver EAP-Success to the supplicant.
         raise AssertionError("Access-Reject carried EAP-Success:\n" + proc.stdout[-2000:])
+    if "(Access-Reject)" in proc.stdout and "EAP packet (code=4" not in proc.stdout:
+        # ...and should tell it EAP-Failure (RFC 3579 §2.6.3).
+        raise AssertionError("Access-Reject without EAP-Failure:\n" + proc.stdout[-2000:])
     return proc.returncode == 0
 
 
@@ -231,6 +234,27 @@ def test_eap_tls_identity_rules(name, reason):
 
 def test_eap_tls_untrusted_ca():
     assert not eapol(tls("rogue"))
+
+
+# ── tunnels only carry the inner method NACo checks ─────────────────────────
+
+@pytest.mark.parametrize("outer,phase2", [("TTLS", "autheap=TLS"), ("PEAP", "auth=TLS")])
+def test_inner_eap_tls_cannot_claim_another_identity(outer, phase2):
+    # A certificate the CA signed for mallory (unknown to NACo) must not log in
+    # as erin by naming erin as the inner identity and NAKing GTC for TLS.
+    conf = f'''network={{
+  key_mgmt=WPA-EAP
+  eap={outer}
+  identity="erin"
+  anonymous_identity="anonymous"
+  phase2="{phase2}"
+  ca_cert="/certs/ca.pem"
+  ca_cert2="/certs/ca.pem"
+  client_cert2="/certs/mallory.pem"
+  private_key2="/certs/mallory.key"
+}}
+'''
+    assert not eapol(conf)
 
 
 # ── accounting ─────────────────────────────────────────────────────────────

@@ -139,8 +139,12 @@ def test_admin_ui_walkthrough(server):
 
         # Real AAA traffic through the internal API (what FreeRADIUS would send).
         for user in ["alice", "bob", "carol"]:
+            station = f"3C-22-FB-00-00-0{len(user)}"
+            aaa("/aaa/authenticate", User_Name=user, User_Password=f"{user}-password-1", NACo_NAS_IP="10.0.0.2",
+                Calling_Station_Id=station)
             aaa("/aaa/authorize", User_Name=user, NACo_Auth_Method="PEAP", NACo_Inner_Identity=user, NACo_NAS_IP="10.0.0.2",
-                Calling_Station_Id=f"3C-22-FB-00-00-0{len(user)}", Called_Station_Id="AA-BB-CC-00-00-01:ACME-Corp")
+                Calling_Station_Id=station, Called_Station_Id="AA-BB-CC-00-00-01:ACME-Corp")
+        aaa("/aaa/authenticate", User_Name="dave", User_Password="dave-password-1", NACo_NAS_IP="10.0.0.1")
         aaa("/aaa/authorize", User_Name="dave", NACo_Auth_Method="PAP", NACo_NAS_IP="10.0.0.1")
         for mac in ["00-1B-63-00-00-40", "F0-18-98-00-00-77", "B8-27-EB-00-00-12"]:
             aaa("/aaa/authorize", User_Name=mac.replace("-", "").lower(), User_Password=mac.replace("-", "").lower(),
@@ -160,6 +164,7 @@ def test_admin_ui_walkthrough(server):
         # Live update: a new decision should slide into the dashboard feed.
         page.goto(BASE + "/")
         page.wait_for_timeout(1200)
+        aaa("/aaa/authenticate", User_Name="erin", User_Password="erin-password-1", NACo_NAS_IP="10.0.0.1")
         aaa("/aaa/authorize", User_Name="erin", NACo_Auth_Method="PAP", NACo_NAS_IP="10.0.0.1")
         page.wait_for_selector(".feed li.enter", timeout=5000)
         shot(page, "20-dashboard-live")

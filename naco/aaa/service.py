@@ -15,6 +15,8 @@ logged by ``authenticate`` (authorization never runs for them).
 from __future__ import annotations
 
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -54,9 +56,35 @@ ACCOUNTING = REGISTRY.counter("naco_radius_accounting_total", "Accounting reques
 # Per-identity slow-down of password guessing through EAP/PAP.
 _failures = ProgressiveDelay(base=1.0, cap=30.0, free_attempts=5)
 
+# Password methods are authorized only for a name whose password NACo itself
+# accepted moments before, from the same NAS and station. FreeRADIUS tells
+# NACo which identity to decide on; this keeps a mistake in that hand-over
+# (an inner method NACo never saw, a nested tunnel) from becoming an accept.
+PASSWORD_METHODS = frozenset({"PAP", "EAP-TTLS", "PEAP"})
+_VERIFIED_SECONDS = 120.0
+_verified: OrderedDict[tuple[str, str, str], float] = OrderedDict()
+_MAX_VERIFIED = 50_000
+
 
 def reset_failure_tracking() -> None:
     _failures._state.clear()
+    _verified.clear()
+
+
+def _verified_key(username: str, req: RequestInfo) -> tuple[str, str, str]:
+    return username, req.nas_ip, req.mac or req.calling_station
+
+
+def _remember_verified(key: tuple[str, str, str]) -> None:
+    _verified[key] = time.monotonic()
+    _verified.move_to_end(key)
+    while len(_verified) > _MAX_VERIFIED:
+        _verified.popitem(last=False)
+
+
+def _recently_verified(key: tuple[str, str, str]) -> bool:
+    at = _verified.get(key)
+    return at is not None and time.monotonic() - at <= _VERIFIED_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +203,8 @@ async def authenticate(attrs: Attrs) -> bool:
             _failures.failure(key)
 
     if ok:
+        if verified := canonical_username(raw_name):
+            _remember_verified(_verified_key(verified, req))
         return True
     CREDENTIAL_FAILURES.inc(reason=reason.split(" —")[0])
     async with session_factory()() as db:
@@ -260,6 +290,8 @@ async def _decide(db: AsyncSession, attrs: Attrs, req: RequestInfo, nas: NasClie
     )
     if isinstance(subject, Decision):
         return subject
+    if req.method in PASSWORD_METHODS and not _recently_verified(_verified_key(username, req)):
+        return deny("password was not verified by NACo")
     return await policy_engine.evaluate(db, subject)
 
 

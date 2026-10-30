@@ -96,10 +96,13 @@ server default {
 
 		Post-Auth-Type REJECT {
 			attr_filter.access_reject
-			# A reject after a completed EAP method would still carry its
-			# EAP-Success; drop it so the eap module answers EAP-Failure.
-			update reply {
-				&EAP-Message !* ANY
+			# A reject after a completed EAP method still carries that
+			# method's EAP-Success: turn it into an EAP-Failure with the same
+			# identifier. A failed method already answers EAP-Failure.
+			if ("%{hex:&reply:EAP-Message}" =~ /^03([0-9a-f]{2})0004$/) {
+				update reply {
+					&EAP-Message := "0x04%{1}0004"
+				}
 			}
 			eap
 		}
