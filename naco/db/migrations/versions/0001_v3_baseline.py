@@ -2,7 +2,7 @@
 
 Revision ID: 0001
 Revises: 
-Create Date: 2026-10-30 12:04:03.358885
+Create Date: 2026-10-30 12:18:30.126054
 """
 from collections.abc import Sequence
 
@@ -170,6 +170,8 @@ def upgrade() -> None:
     sa.Column('nas_ip', sa.String(length=45), nullable=False),
     sa.Column('acct_session_id', sa.String(length=64), nullable=False),
     sa.Column('username', sa.String(length=64), nullable=False),
+    sa.Column('acct_username', sa.String(length=64), nullable=False),
+    sa.Column('calling_station_id', sa.String(length=64), nullable=False),
     sa.Column('mac_address', sa.String(length=17), nullable=False),
     sa.Column('framed_ip', sa.String(length=45), nullable=False),
     sa.Column('ssid', sa.String(length=64), nullable=False),

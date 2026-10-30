@@ -63,7 +63,7 @@ def canonical_username(raw: str | None) -> str:
     return name
 
 
-async def _load(db: AsyncSession, username: str) -> tuple[UserInfo, str | None] | None:
+async def load_user(db: AsyncSession, username: str) -> tuple[UserInfo, str | None] | None:
     row = (await db.execute(
         select(User, Group).outerjoin(Group, User.group_id == Group.id).where(User.username == username)
     )).first()
@@ -84,7 +84,7 @@ async def lookup_user(username: str) -> UserInfo | None:
     if not name:
         return None
     async with session_factory()() as db:
-        found = await _load(db, name)
+        found = await load_user(db, name)
     return found[0] if found else None
 
 
@@ -125,7 +125,7 @@ async def _provision(username: str, entry: LdapUser) -> UserInfo | None:
             await db.commit()
         except IntegrityError:  # concurrent first login created it
             await db.rollback()
-        found = await _load(db, username)
+        found = await load_user(db, username)
     return found[0] if found else None
 
 
@@ -136,7 +136,7 @@ async def authenticate_user(username: str, password: str) -> IdentityResult:
         return IdentityResult(False, "missing or invalid credentials", name or (username or "")[:MAX_USERNAME])
 
     async with session_factory()() as db:
-        found = await _load(db, name)
+        found = await load_user(db, name)
     info, pw_hash = found if found else (None, None)
 
     if info is not None and not info.enabled:

@@ -343,7 +343,11 @@ class RadiusSession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     nas_ip: Mapped[str] = mapped_column(String(45))
     acct_session_id: Mapped[str] = mapped_column(String(64))
+    # Authenticated identity the policy saw (inner identity / certificate CN).
     username: Mapped[str] = mapped_column(String(64), default="")
+    # Identifiers exactly as the NAS reported them — echoed back in CoA.
+    acct_username: Mapped[str] = mapped_column(String(64), default="")
+    calling_station_id: Mapped[str] = mapped_column(String(64), default="")
     mac_address: Mapped[str] = mapped_column(String(17), default="", index=True)
     framed_ip: Mapped[str] = mapped_column(String(45), default="", index=True)
     ssid: Mapped[str] = mapped_column(String(64), default="")
