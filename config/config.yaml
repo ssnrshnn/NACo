@@ -29,7 +29,7 @@ portal:
 # ldap:
 #   enabled: true
 #   servers: ["ldaps://dc1.example.com", "ldaps://dc2.example.com"]
-#   # ca_file: /etc/naco/ad-ca.pem    # mount your AD CA next to this file
+#   # ca_file: /etc/naco/ad-ca.pem    # put the AD CA in config/ad-ca.pem
 #   bind_dn: "CN=naco-svc,OU=Service,DC=example,DC=com"   # password: NACO_LDAP_BIND_PASSWORD
 #   base_dn: "DC=example,DC=com"
 #   user_filter: "(sAMAccountName={username})"

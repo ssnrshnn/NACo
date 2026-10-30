@@ -3,6 +3,9 @@
     docker compose exec naco nacoctl backup
     docker compose exec naco nacoctl reset-password admin
 
+Backups stream through standard output and input (``-o -`` / ``restore -``),
+so files never need to be copied into the container with the right owner.
+
 Secrets are never taken as command-line arguments (they would show in `ps`).
 """
 from __future__ import annotations
@@ -154,53 +157,81 @@ def _age() -> str:
     return str(path)
 
 
+# Every age file starts with one of these (binary or ASCII-armored).
+AGE_MAGIC = (b"age-encryption.org/", b"-----BEGIN AGE ENCRYPTED FILE-----")
+
+
 @cli.command()
-@click.option("--output", "-o", type=click.Path(dir_okay=False, path_type=Path),
-              help="Default: /backups/naco-<timestamp>.db[.age]")
+@click.option("--output", "-o", type=click.Path(dir_okay=False, allow_dash=True, path_type=Path),
+              help="File, or - for standard output. Default: /backups/naco-<timestamp>.db[.age]")
 @click.option("--age-recipient", "recipient", help="Encrypt for this age public key (age1…).")
 def backup(output: Path | None, recipient: str | None) -> None:
-    """Back up the database (safe while NACo runs)."""
+    """Back up the database (safe while NACo runs).
+
+    \b
+    docker compose exec naco nacoctl backup
+    docker compose exec -T naco nacoctl backup -o - > naco.db
+    """
     cfg = get_config()
     if not Path(cfg.database.path).exists():
         _fail(f"no database at {cfg.database.path}")
+    to_stdout = output is not None and str(output) == "-"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output = output or Path("/backups") / f"naco-{stamp}.db{'.age' if recipient else ''}"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if recipient:
-        with tempfile.TemporaryDirectory() as tmp:
-            plain = Path(tmp) / "naco.db"
-            _sqlite_copy(cfg.database.path, plain)
-            subprocess.run([_age(), "-r", recipient, "-o", str(output), str(plain)], check=True)  # noqa: S603
-        os.chmod(output, 0o600)
-    else:
-        _sqlite_copy(cfg.database.path, output)
-    click.echo(f"Backup written to {output}")
+    target = output or Path("/backups") / f"naco-{stamp}.db{'.age' if recipient else ''}"
+    if not to_stdout:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        plain = work / "naco.db" if (recipient or to_stdout) else target
+        _sqlite_copy(cfg.database.path, plain)
+        result = plain
+        if recipient:
+            result = work / "naco.db.age" if to_stdout else target
+            subprocess.run([_age(), "-r", recipient, "-o", str(result), str(plain)], check=True)  # noqa: S603
+            os.chmod(result, 0o600)
+        if to_stdout:
+            stream = sys.stdout.buffer
+            with open(result, "rb") as handle:
+                shutil.copyfileobj(handle, stream)
+            stream.flush()
+    click.echo(f"Backup written to {'standard output' if to_stdout else target}", err=to_stdout)
     if not recipient:
         click.secho("It contains encrypted secrets and password hashes — keep it private, "
-                    "and remember it needs the same NACO_MASTER_KEY.", fg="yellow")
+                    "and remember it needs the same NACO_MASTER_KEY.", fg="yellow", err=to_stdout)
 
 
 @cli.command()
-@click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("source", type=click.Path(exists=True, dir_okay=False, allow_dash=True, path_type=Path))
 @click.option("--age-identity", "identity", type=click.Path(exists=True, dir_okay=False),
-              help="age private key file, for .age backups.")
+              help="age private key file, for encrypted backups.")
 @click.option("--yes", is_flag=True, help="Confirm overwriting the current database.")
 def restore(source: Path, identity: str | None, yes: bool) -> None:
-    """Replace the database with a backup. Stop NACo first:
+    """Replace the database with a backup — a file, or - for standard input.
+    Stop NACo first:
 
-    docker compose stop naco && docker compose run --rm naco nacoctl restore /backups/FILE --yes
+    \b
+    docker compose stop naco
+    docker compose run --rm -T naco nacoctl restore - --yes < naco.db
+    docker compose start naco
     """
     if not yes:
         _fail("restoring replaces every user, device and policy — re-run with --yes (and NACo stopped)")
     target = Path(get_config().database.path)
     with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
-        plain = Path(tmp) / "restore.db"
-        if source.suffix == ".age":
-            if identity is None:
-                _fail("this backup is encrypted — pass --age-identity")
-            subprocess.run([_age(), "-d", "-i", str(identity), "-o", str(plain), str(source)], check=True)  # noqa: S603
+        received, plain = Path(tmp) / "received", Path(tmp) / "restore.db"
+        if str(source) == "-":
+            with open(received, "wb") as handle:
+                shutil.copyfileobj(sys.stdin.buffer, handle)
         else:
-            shutil.copyfile(source, plain)
+            shutil.copyfile(source, received)
+        with open(received, "rb") as handle:
+            encrypted = handle.read(64).startswith(AGE_MAGIC)
+        if encrypted:
+            if identity is None:
+                _fail("this backup is encrypted — pass --age-identity, or decrypt it with age first")
+            subprocess.run([_age(), "-d", "-i", str(identity), "-o", str(plain), str(received)], check=True)  # noqa: S603
+        else:
+            received.rename(plain)
         conn = sqlite3.connect(plain)
         try:
             ok = conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -216,17 +247,23 @@ def restore(source: Path, identity: str | None, yes: bool) -> None:
         os.chmod(plain, 0o600)
         os.replace(plain, target)
     upgrade_head(str(target))
-    click.echo(f"Restored {source.name}. Start NACo again: docker compose start naco")
+    click.echo(f"Restored {'the backup' if str(source) == '-' else source.name}. "
+               "Start NACo again: docker compose start naco")
 
 
 # ── key rotation ───────────────────────────────────────────────────────────
 
 @cli.command("rotate-master-key")
-@click.option("--new-key-file", required=True, type=click.Path(exists=True, dir_okay=False),
-              help="File holding the new 32-byte key (base64 or hex).")
+@click.option("--new-key-file", required=True, type=click.Path(exists=True, dir_okay=False, allow_dash=True),
+              help="File holding the new 32-byte key (base64 or hex), or - for standard input.")
 def rotate_master_key(new_key_file: str) -> None:
-    """Re-encrypt every stored secret with a new NACO_MASTER_KEY. Stop NACo first."""
-    new_key = parse_master_key(Path(new_key_file).read_text())
+    """Re-encrypt every stored secret with a new NACO_MASTER_KEY. Stop NACo first:
+
+    \b
+    docker compose run --rm -T naco nacoctl rotate-master-key --new-key-file - < new.key
+    """
+    material = sys.stdin.read() if new_key_file == "-" else Path(new_key_file).read_text()
+    new_key = parse_master_key(material)
     old_key = get_secrets().master_key
     if new_key == old_key:
         _fail("the new key is the current key")

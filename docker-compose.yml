@@ -32,7 +32,7 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       - naco_data:/var/lib/naco
-      - ./config/config.yaml:/etc/naco/config.yaml:ro
+      - ./config:/etc/naco:ro
       - naco_backups:/backups
     tmpfs: ["/tmp"]
     ports:

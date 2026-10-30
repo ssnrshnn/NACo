@@ -105,6 +105,30 @@ def test_backup_and_restore_roundtrip(db_path, tmp_path):
     assert not os.path.exists(db_path + "-wal") or os.path.getsize(db_path + "-wal") == 0
 
 
+def test_backup_to_stdout_and_restore_from_stdin(db_path):
+    out = CliRunner().invoke(cli, ["backup", "-o", "-"], catch_exceptions=False)
+    assert out.exit_code == 0 and out.stdout_bytes.startswith(b"SQLite format 3\x00")
+
+    async def drop_users():
+        async with session_factory()() as db:
+            await db.execute(text("DELETE FROM users"))
+            await db.commit()
+    run(drop_users)
+    result = CliRunner().invoke(cli, ["restore", "-", "--yes"], input=out.stdout_bytes, catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+
+    async def alice_back():
+        async with session_factory()() as db:
+            assert (await db.execute(select(User.username))).scalar_one() == "alice"
+    run(alice_back)
+
+
+def test_restore_recognizes_encrypted_backups(db_path):
+    result = CliRunner().invoke(cli, ["restore", "-", "--yes"],
+                                input=b"age-encryption.org/v1\n-> X25519 abc\n", catch_exceptions=False)
+    assert result.exit_code == 1 and "encrypted" in result.output
+
+
 def test_restore_refuses_garbage(db_path, tmp_path):
     junk = tmp_path / "junk.db"
     junk.write_bytes(b"not a database" * 100)
@@ -125,3 +149,10 @@ def test_rotate_master_key(db_path, tmp_path, monkeypatch):
     assert crypto.decrypt(stored, aad="nas_clients.secret", key=new_key) == "nas-secret-value-1"
     with pytest.raises(crypto.SecretError):
         crypto.decrypt(stored, aad="nas_clients.secret", key=TEST_MASTER_KEY)
+
+
+def test_rotate_master_key_from_stdin(db_path):
+    new_key = bytes(range(100, 132)).hex()
+    result = CliRunner().invoke(cli, ["rotate-master-key", "--new-key-file", "-"], input=new_key + "\n",
+                                catch_exceptions=False)
+    assert "Re-encrypted 2 secrets" in result.output
