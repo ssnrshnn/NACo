@@ -54,6 +54,7 @@ jobs:
           python -m pip install --require-hashes -r requirements.lock
           python -m pip install -e '.[dev]'
       - run: pytest -m e2e tests/e2e -v
+        env: { NACO_E2E_KEEP: "1" }   # leave the stack up for the logs below
       - name: Container logs
         if: failure()
         run: docker compose -f tests/e2e/docker-compose.yml logs --no-color
