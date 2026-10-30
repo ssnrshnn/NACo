@@ -69,14 +69,16 @@ stays the same, so devices keep trusting it).
 ## Released images
 
 Instead of building locally, use the signed images from GitHub Container
-Registry — set both in `.env`, with the same version:
+Registry, both with the same version. On a new host:
 
 ```bash
-NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.0
-NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.0
+NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.0 \
+NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.0 ./quickstart.sh
 ```
 
-`quickstart.sh` then pulls instead of building. Verify a signature with:
+`quickstart.sh` writes both into `.env` and pulls instead of building; on an
+existing installation, change them in `.env` and run it again. Verify a
+signature with:
 
 ```bash
 cosign verify ghcr.io/ssnrshnn/naco:3.0.0 \
