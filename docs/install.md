@@ -83,8 +83,8 @@ Instead of building locally, use the signed images from GitHub Container
 Registry, both with the same version. On a new host:
 
 ```bash
-NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.1 \
-NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.1 ./quickstart.sh
+NACO_IMAGE=ghcr.io/ssnrshnn/naco:3.0.2 \
+NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.0.2 ./quickstart.sh
 ```
 
 `quickstart.sh` writes both into `.env` and pulls instead of building; on an
@@ -92,7 +92,7 @@ existing installation, change them in `.env` and run it again. Verify a
 signature with:
 
 ```bash
-cosign verify ghcr.io/ssnrshnn/naco:3.0.1 \
+cosign verify ghcr.io/ssnrshnn/naco:3.0.2 \
   --certificate-identity-regexp '^https://github.com/ssnrshnn/NACo/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

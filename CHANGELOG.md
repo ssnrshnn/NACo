@@ -2,7 +2,7 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 3.0.2 — 2026-10-30
 
 ### Fixed
 
@@ -13,6 +13,20 @@ All notable changes to NACo. Versions follow [Semantic Versioning](https://semve
   of an existing installation.
 - First sign-in no longer asks for the password again right after it was
   chosen, on the two-factor step.
+
+### Changed
+
+- When NACo cannot be asked (stopped, restarting, timing out or answering an
+  error), FreeRADIUS no longer rejects: it does not answer, so switches mark
+  the server dead and apply their server-dead action (e.g. a critical VLAN)
+  instead of refusing every new login and re-authentication. Nobody is ever
+  let in without NACo's decision.
+
+### Added
+
+- [First deployment](docs/pilot.md): a pilot step by step — one port in
+  monitor mode, what the switch does when NACo cannot be reached, then
+  enforcement and Change of Authorization.
 
 ## 3.0.1 — 2026-10-30
 
