@@ -423,6 +423,11 @@ async def test_accounting_without_nas_source_is_ignored(client, world):
     assert await sessions(world) == []
 
 
+async def test_status_for_status_server_probes(client):
+    assert (await client.get("/aaa/status")).status_code == 204
+    assert (await client.get("/aaa/status", headers={"Authorization": "Bearer wrong"})).status_code == 403
+
+
 async def test_metrics_endpoint_is_open_and_renders(client):
     r = await client.get("/metrics", headers={"Authorization": ""})
     assert r.status_code == 200

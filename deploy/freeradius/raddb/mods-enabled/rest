@@ -39,6 +39,29 @@ rest naco {
 	}
 }
 
+# Status-Server probes from a NAS are answered only while NACo answers this.
+rest naco_status {
+	connect_uri = "$ENV{NACO_AAA_URL}"
+	connect_timeout = 2.0
+
+	authorize {
+		uri = "${..connect_uri}/aaa/status"
+		method = "get"
+		timeout = 3.0
+	}
+
+	pool {
+		start = 0
+		min = 0
+		max = 4
+		spare = 1
+		uses = 0
+		retry_delay = 1
+		lifetime = 0
+		idle_timeout = 60
+	}
+}
+
 rest naco_clients {
 	connect_uri = "$ENV{NACO_AAA_URL}"
 	connect_timeout = 3.0
