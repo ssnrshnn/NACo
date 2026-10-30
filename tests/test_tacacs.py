@@ -60,6 +60,7 @@ def test_crypt_matches_the_rfc_and_is_an_involution(n):
     (b"\xc2\x01\x01\x00" + b"\x00" * 8, "version"),
     (b"\xc1\x09\x01\x00" + b"\x00" * 8, "type"),
     (b"\xc1\x01\x01\x00" + b"\x00" * 4 + struct.pack("!I", 70000), "too large"),
+    (b"\xc1\x01\xff\x00" + b"\x00" * 8, "sequence"),
     (b"\xc1", "short"),
 ])
 def test_header_validation(raw, msg):

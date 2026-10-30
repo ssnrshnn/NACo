@@ -1,6 +1,6 @@
 # NACo's FreeRADIUS: the stock image with a small, NACo-only configuration,
 # running as an unprivileged user. Certificates are mounted at runtime.
-FROM freeradius/freeradius-server:3.2.10-alpine
+FROM freeradius/freeradius-server:3.2.10-alpine@sha256:01b03eb6a699683727b0bd8ae34e6b9a7bf5a9716dccd4893535a678e27dfbe2
 
 RUN addgroup -S -g 1812 radius \
  && adduser -S -D -H -u 1812 -G radius -s /sbin/nologin radius \

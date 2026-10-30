@@ -88,7 +88,9 @@ cosign verify ghcr.io/ssnrshnn/naco:3.0.0 \
 
 Allow only what the table in the README lists. NACo's internal API (8081)
 and its web port (8080) are never published; Caddy is the only way in over
-HTTP(S). If the host runs a firewall such as `ufw`, remember that Docker
+HTTP(S). Ports are published on **IPv4** only: Docker would carry IPv6
+connections to the IPv4 containers through a proxy that hides the client's
+address, which NACo needs to recognize switches, guests and sign-in sources. If the host runs a firewall such as `ufw`, remember that Docker
 publishes ports through its own iptables rules — restrict sources with
 Docker's `DOCKER-USER` chain or an upstream firewall.
 

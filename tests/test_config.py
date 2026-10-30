@@ -173,6 +173,12 @@ def test_dev_mode_still_rejects_bad_values():
         load_secrets({"NACO_DEV": "1", "NACO_INTERNAL_TOKEN": "short"})
 
 
+def test_portal_access_code_must_not_be_guessable(tmp_path):
+    with pytest.raises(ConfigError, match="access_code"):
+        load_config(write(tmp_path, "portal:\n  access_code: '1234'\n"), env={})
+    assert load_config(write(tmp_path, "portal:\n  access_code: ' Sesame-42 '\n"), env={}).portal.access_code == "Sesame-42"
+
+
 # ── shipped files ───────────────────────────────────────────────────────────
 
 def test_shipped_config_is_valid_and_matches_defaults():

@@ -22,7 +22,7 @@ portal:
   enabled: true
   organization: NACo
   session_hours: 8
-  # access_code: ""          # optional code guests must enter
+  # access_code: ""          # optional code guests must enter (6+ characters)
   # terms: |
   #   By using this network you agree to …
 

@@ -114,12 +114,22 @@ class PortalConfig(_Strict):
         "By using this network you agree to use it lawfully and responsibly. "
         "Activity may be logged."
     )
-    # Optional shared code guests must enter; empty = click-through.
-    access_code: str = ""
+    # Optional shared code guests must enter; empty = click-through. At least
+    # six characters: wrong codes are limited per address, but guests can get
+    # new addresses, so a short code would be guessed.
+    access_code: str = Field("", max_length=64)
     session_hours: int = Field(8, ge=1, le=24 * 30)
     # How recently the guest's RADIUS session must have been updated for the
     # portal to trust its Framed-IP → MAC mapping.
     match_window_minutes: int = Field(15, ge=1, le=24 * 60)
+
+    @field_validator("access_code")
+    @classmethod
+    def _long_enough(cls, v: str) -> str:
+        v = v.strip()
+        if v and len(v) < 6:
+            raise ValueError("access_code must be empty or at least 6 characters")
+        return v
 
 
 class LdapGroupMapping(_Strict):

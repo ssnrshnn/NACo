@@ -1,4 +1,4 @@
-# Pinned action SHAs and base images get update pull requests every week.
+# Pinned action SHAs and base-image digests get update pull requests every week.
 # Python dependencies are locked in requirements.lock (uv pip compile …);
 # refresh them deliberately and let CI's pip-audit flag known issues.
 version: 2
@@ -10,4 +10,7 @@ updates:
       actions: { patterns: ["*"] }
   - package-ecosystem: docker
     directories: [/deploy, /deploy/freeradius]
+    schedule: { interval: weekly }
+  - package-ecosystem: docker-compose
+    directory: /
     schedule: { interval: weekly }

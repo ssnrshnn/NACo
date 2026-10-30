@@ -89,7 +89,7 @@ portal:
   enabled: true
   organization: Example Ltd        # shown on the page
   session_hours: 8                 # how long a registration lasts
-  access_code: ""                  # e.g. today's code at reception; empty = click-through
+  access_code: ""                  # 6+ characters, e.g. today's code at reception; empty = click-through
   terms: |
     By using this network you agree to …
   match_window_minutes: 15         # how fresh the RADIUS session must be

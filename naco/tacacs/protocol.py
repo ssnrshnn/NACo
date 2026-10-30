@@ -86,6 +86,8 @@ class Header:
             raise ProtocolError(f"unknown packet type {kind}")
         if length > MAX_BODY_LEN:
             raise ProtocolError(f"body too large ({length} bytes)")
+        if seq_no == 0xFF:  # the reply would need 256; RFC 8907 §4.1: sequence numbers never wrap
+            raise ProtocolError("sequence number exhausted")
         return cls(version, kind, seq_no, flags, session_id, length)
 
     def encode(self) -> bytes:
