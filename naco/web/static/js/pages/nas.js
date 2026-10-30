@@ -5,7 +5,8 @@ export default async function (root) {
   const su = can("SUPERUSER");
   const fields = (editing) => [
     { name: "name", label: "Name", required: true, placeholder: "core-sw01" },
-    { name: "ip_address", label: "IP address", required: true, mono: true, placeholder: "10.0.0.1" },
+    { name: "ip_address", label: "IP address or network", required: true, mono: true, placeholder: "10.0.0.1 or 10.0.20.0/24",
+      help: "A network covers devices that each send RADIUS themselves — access points, cloud-managed switches. One address always wins over a network." },
     secretField("Shared secret", editing ? "Leave empty to keep the current secret." : "Configure the same secret on the switch or controller."),
     { name: "coa_port", label: "CoA port", type: "number", min: 1, max: 65535, value: 3799 },
     { name: "description", label: "Description" },

@@ -125,6 +125,23 @@ async def test_ipv6_client(client):
     assert body["control:FreeRADIUS-Client-Require-MA"]["value"] == "no"
 
 
+async def test_clients_by_network_narrowest_first(client, world):
+    async with world() as db:
+        db.add_all([NasClient(name="aps", ip_address="10.0.20.0/24", secret="ap-shared-secret-1"),
+                    NasClient(name="lab-aps", ip_address="10.0.20.128/25", secret="lab-shared-secret"),
+                    NasClient(name="fixed", ip_address="10.0.20.200", secret="fixed-shared-secret")])
+        await db.commit()
+    for ip, name in (("10.0.20.7", "aps"), ("10.0.20.130", "lab-aps"), ("10.0.20.200", "fixed")):
+        body = (await client.get(f"/aaa/clients/{ip}")).json()
+        assert body["control:FreeRADIUS-Client-Shortname"]["value"] == name
+        assert body["control:FreeRADIUS-Client-IP-Address"]["value"] == ip  # the device, not the network
+    assert (await client.get("/aaa/clients/10.0.21.1")).status_code == 404
+    await client.post("/aaa/authorize", json=rlm(User_Name="aabbcc000001", NACo_Auth_Method="MAB",
+                                                 NACo_NAS_IP="10.0.20.7", Calling_Station_Id="AA-BB-CC-00-00-01"))
+    (row,) = await logs(world)
+    assert (row.nas_ip, row.nas_name) == ("10.0.20.7", "aps")
+
+
 @pytest.mark.parametrize("ip", ["10.0.0.2", "10.0.0.9", "garbage"])
 async def test_unknown_or_disabled_client(client, ip):
     assert (await client.get(f"/aaa/clients/{ip}")).status_code == 404

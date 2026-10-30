@@ -17,6 +17,7 @@ from naco.core.netutils import normalize_mac, parse_ip
 from naco.core.timeutil import utcnow
 from naco.db.engine import get_db
 from naco.db.models import GuestRegistration, NasClient, RadiusSession
+from naco.radius.clients import nas_directory
 from naco.radius.coa import Outcome
 from naco.radius.reevaluate import reevaluator, send_disconnect
 
@@ -68,7 +69,7 @@ class BulkDisconnect(BaseModel):
 async def list_sessions(q: str = Query("", max_length=64), nas_ip: str | None = None,
                         paging: Paging = Depends(), _: Principal = Depends(viewer),
                         db: AsyncSession = Depends(get_db)) -> Page[SessionOut]:
-    names = {n.ip_address: n.name for n in (await db.execute(select(NasClient))).scalars()}
+    directory = await nas_directory(db)
     query = select(RadiusSession).order_by(RadiusSession.updated_at.desc())
     if nas_ip:
         query = query.where(RadiusSession.nas_ip == nas_ip)
@@ -78,20 +79,20 @@ async def list_sessions(q: str = Query("", max_length=64), nas_ip: str | None = 
                                 RadiusSession.mac_address.ilike(term, escape="\\"),
                                 RadiusSession.framed_ip.ilike(term, escape="\\")))
     rows, total = await paging.fetch(db, query)
-    return Page(items=[SessionOut(nas_name=names.get(s.nas_ip, ""), **{
+    return Page(items=[SessionOut(nas_name=getattr(directory.find(s.nas_ip), "name", ""), **{
         k: getattr(s, k) for k in SessionOut.model_fields if k != "nas_name"}) for s in rows],
         total=total, page=paging.page, per_page=paging.per_page)
 
 
 async def _disconnect(audit: AuditTrail, sessions: list[RadiusSession]) -> DisconnectResult:
-    nas_by_ip = {n.ip_address: n for n in (await audit.db.execute(select(NasClient))).scalars()}
+    directory = await nas_directory(audit.db)
     # End the transaction before waiting on NASes: SQLite transactions hold
     # the write lock, and CoA can take seconds per unreachable NAS.
     await audit.db.commit()
     result = DisconnectResult(requested=len(sessions), acked=0, failed=0, skipped=0)
     targets = []
     for s in sessions:
-        nas = nas_by_ip.get(s.nas_ip)
+        nas = directory.find(s.nas_ip)
         if nas is None:
             result.skipped += 1
         else:

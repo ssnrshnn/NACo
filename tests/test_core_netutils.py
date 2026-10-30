@@ -1,6 +1,13 @@
 import pytest
 
-from naco.core.netutils import ip_in_any, is_randomized_mac, normalize_mac, parse_called_station, parse_ip
+from naco.core.netutils import (
+    ip_in_any,
+    is_randomized_mac,
+    normalize_mac,
+    parse_called_station,
+    parse_client_address,
+    parse_ip,
+)
 
 
 @pytest.mark.parametrize("value", [
@@ -50,6 +57,24 @@ def test_parse_ip():
     assert parse_ip("2001:db8::1") == "2001:db8::1"
     assert parse_ip("10.0.0.300") is None
     assert parse_ip(None) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("10.0.0.5", "10.0.0.5"), (" 10.0.20.0/24 ", "10.0.20.0/24"), ("10.0.20.5/32", "10.0.20.5"),
+    ("10.1.0.0/16", "10.1.0.0/16"), ("2001:db8:1::/64", "2001:db8:1::/64"), ("2001:db8::7/128", "2001:db8::7"),
+])
+def test_client_address_is_an_ip_or_a_network(value, expected):
+    assert parse_client_address(value) == expected
+
+
+@pytest.mark.parametrize("value,message", [
+    ("10.0.20.5/24", "10.0.20.0/24"),       # host bits set: say which network was meant
+    ("10.0.0.0/8", "/16"), ("0.0.0.0/0", "/16"), ("2001:db8::/32", "/48"),
+    ("10.0.0.300", "IP address"), ("", "IP address"),
+])
+def test_client_address_refuses(value, message):
+    with pytest.raises(ValueError, match=message):
+        parse_client_address(value)
 
 
 def test_ip_in_any():

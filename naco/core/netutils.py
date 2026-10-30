@@ -47,6 +47,32 @@ def parse_called_station(value: str | None) -> tuple[str | None, str | None]:
     return normalize_mac(m.group(1)), (ssid[:64] if ssid else None)
 
 
+# A RADIUS client is one address, or a network whose devices each send RADIUS
+# (access points, cloud-managed switches). Wider networks are refused: they
+# would make most of a site a RADIUS client.
+_WIDEST_PREFIX = {4: 16, 6: 48}
+
+
+def parse_client_address(value: str | None) -> str:
+    """'10.0.0.5' or '10.0.20.0/24' (a /32 or /128 becomes the plain address)."""
+    text = (value or "").strip()
+    if "/" not in text:
+        if (ip := parse_ip(text)) is None:
+            raise ValueError("not an IP address or network")
+        return ip
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        raise ValueError("not an IP address or network") from None
+    if net.prefixlen == net.max_prefixlen:
+        return str(net.network_address)
+    if ipaddress.ip_address(text.split("/")[0]) != net.network_address:
+        raise ValueError(f"use the network address: {net}")
+    if net.prefixlen < _WIDEST_PREFIX[net.version]:
+        raise ValueError(f"networks wider than /{_WIDEST_PREFIX[net.version]} are refused")
+    return str(net)
+
+
 def parse_ip(value: str | None) -> str | None:
     if not value:
         return None

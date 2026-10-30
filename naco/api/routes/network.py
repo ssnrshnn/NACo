@@ -16,7 +16,7 @@ from naco.api.common import commit_or_conflict, flush_or_conflict, get_or_404, s
 from naco.api.deps import Principal, superuser, viewer
 from naco.api.errors import ApiError
 from naco.config import get_config
-from naco.core.netutils import parse_ip
+from naco.core.netutils import parse_client_address, parse_ip
 from naco.db.engine import get_db
 from naco.db.models import CommandAction, CommandRule, CommandSet, Group, NasClient, TacacsClient
 
@@ -44,6 +44,7 @@ def _secret(value: str) -> str:
 
 
 IpAddress = Annotated[str, AfterValidator(_ip)]
+ClientAddress = Annotated[str, AfterValidator(parse_client_address)]
 SharedSecret = Annotated[str, Field(max_length=128), AfterValidator(_secret)]
 
 
@@ -62,7 +63,7 @@ class NasOut(BaseModel):
 
 class NasIn(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=NAME_PATTERN)
-    ip_address: IpAddress
+    ip_address: ClientAddress
     secret: SharedSecret
     coa_port: int = Field(3799, ge=1, le=65535)
     require_message_authenticator: bool = True
@@ -72,7 +73,7 @@ class NasIn(BaseModel):
 
 class NasUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=64, pattern=NAME_PATTERN)
-    ip_address: IpAddress | None = None
+    ip_address: ClientAddress | None = None
     secret: SharedSecret | None = None
     coa_port: int | None = Field(None, ge=1, le=65535)
     require_message_authenticator: bool | None = None

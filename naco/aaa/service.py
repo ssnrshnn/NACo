@@ -43,6 +43,7 @@ from naco.db.models import (
 )
 from naco.policy import engine as policy_engine
 from naco.policy.context import AUTH_METHODS, Decision, deny
+from naco.radius.clients import find_nas
 
 log = logging.getLogger(__name__)
 trail = logging.getLogger("naco.trail")
@@ -104,10 +105,8 @@ async def lookup_client(ip: str) -> ClientDef | None:
     if addr is None:
         return None
     async with session_factory()() as db:
-        nas = (await db.execute(
-            select(NasClient).where(NasClient.ip_address == addr, NasClient.enabled.is_(True))
-        )).scalar_one_or_none()
-    if nas is None:
+        nas = await find_nas(db, addr)
+    if nas is None or not nas.enabled:
         return None
     return ClientDef(nas.name, addr, nas.secret, nas.require_message_authenticator)
 
@@ -241,9 +240,7 @@ async def authenticate(attrs: Attrs) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _nas(db: AsyncSession, ip: str) -> NasClient | None:
-    if not ip:
-        return None
-    return (await db.execute(select(NasClient).where(NasClient.ip_address == ip))).scalar_one_or_none()
+    return await find_nas(db, ip)
 
 
 async def guest_active(db: AsyncSession, mac: str, now: datetime) -> bool:
