@@ -18,7 +18,7 @@ from naco.config import get_config
 from naco.core.passwords import hash_password, validate_admin_password, verify_password, verify_password_sync
 from naco.core.ratelimit import ProgressiveDelay, SlidingWindow
 from naco.core.timeutil import utcnow
-from naco.db.engine import get_db
+from naco.db.engine import get_db, release
 from naco.db.models import ActorType, AdminRole, AdminSession, AdminUser
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -64,13 +64,33 @@ async def _admin(db: AsyncSession, principal: Principal) -> AdminUser:
     return admin
 
 
-async def _use_recovery_code(admin: AdminUser, code: str) -> bool:
+async def _second_factor(db: AsyncSession, admin: AdminUser, code: str) -> bool:
+    """Check and record a TOTP or recovery code. Runs after bcrypt, in a fresh
+    transaction: concurrent sign-ins are serialized here, so a code works once."""
+    await db.refresh(admin)
+    if not admin.enabled or not admin.totp_secret:
+        return not admin.totp_secret and admin.enabled
+    step = totp.match(admin.totp_secret, code, admin.totp_last_step)
+    if step is not None:
+        admin.totp_last_step = step
+        return True
+    if not totp.looks_like_recovery_code(code):
+        return False
+    candidates = list(admin.recovery_codes)
+    await release(db)
     code = code.strip().lower()
-    for i, hashed in enumerate(admin.recovery_codes):
+    used = None
+    for hashed in candidates:
         if await asyncio.to_thread(verify_password_sync, code, hashed):
-            admin.recovery_codes = admin.recovery_codes[:i] + admin.recovery_codes[i + 1:]
-            return True
-    return False
+            used = hashed
+            break
+    if used is None:
+        return False
+    await db.refresh(admin)
+    if used not in admin.recovery_codes:  # spent by a concurrent sign-in
+        return False
+    admin.recovery_codes = [h for h in admin.recovery_codes if h != used]
+    return True
 
 
 # ── sign in / out ──────────────────────────────────────────────────────────
@@ -97,15 +117,11 @@ async def login(body: LoginIn, request: Request, response: Response, db: AsyncSe
                        headers={"Retry-After": str(math.ceil(wait))})
 
     admin = (await db.execute(select(AdminUser).where(AdminUser.username == name))).scalar_one_or_none()
+    await release(db)
     ok = await verify_password(body.password, admin.password_hash if admin else None)
     ok = ok and admin is not None and admin.enabled
-    if ok and admin is not None and admin.totp_secret:
-        step = totp.match(admin.totp_secret, body.totp_code, admin.totp_last_step)
-        if step is not None:
-            admin.totp_last_step = step
-        elif not (totp.looks_like_recovery_code(body.totp_code)
-                  and await _use_recovery_code(admin, body.totp_code)):
-            ok = False
+    if ok and admin is not None:
+        ok = await _second_factor(db, admin, body.totp_code)
 
     if not ok or admin is None:
         _per_user.failure(name)
@@ -158,6 +174,7 @@ class PasswordIn(BaseModel):
 async def change_password(body: PasswordIn, principal: Principal = Depends(signed_in),
                           audit: AuditTrail = Depends(audit_trail)) -> Response:
     admin = await _admin(audit.db, principal)
+    await release(audit.db)
     if not await verify_password(body.current_password, admin.password_hash):
         raise ApiError(403, "current password is wrong")
     try:
@@ -166,7 +183,9 @@ async def change_password(body: PasswordIn, principal: Principal = Depends(signe
         raise ApiError(422, str(exc)) from exc
     if body.new_password == body.current_password:
         raise ApiError(422, "choose a password you have not used just now")
-    admin.password_hash = await hash_password(body.new_password)
+    new_hash = await hash_password(body.new_password)
+    await audit.db.refresh(admin)
+    admin.password_hash = new_hash
     admin.must_change_password = False
     admin.password_changed_at = utcnow()
     await sessions.revoke_all(audit.db, admin.id, keep_id=principal.session_id)
@@ -201,8 +220,10 @@ async def totp_setup(body: ReauthIn, principal: Principal = Depends(signed_in),
     admin = await _admin(audit.db, principal)
     if admin.must_change_password:
         raise ApiError(403, "change your password first", "setup_required")
+    await release(audit.db)
     if not await verify_password(body.password, admin.password_hash):
         raise ApiError(403, "password is wrong")
+    await audit.db.refresh(admin)
     if admin.totp_secret:
         raise ApiError(409, "two-factor authentication is already enabled")
     secret = totp.new_secret()
@@ -223,8 +244,14 @@ async def totp_confirm(body: CodeIn, principal: Principal = Depends(signed_in),
     if step is None:
         raise ApiError(422, "that code is not valid — check the time on your device")
     codes = totp.new_recovery_codes()
-    admin.totp_secret, admin.totp_pending_secret, admin.totp_last_step = admin.totp_pending_secret, None, step
-    admin.recovery_codes = list(await asyncio.gather(*(hash_password(c) for c in codes)))
+    pending = admin.totp_pending_secret
+    await release(audit.db)
+    hashes = list(await asyncio.gather(*(hash_password(c) for c in codes)))
+    await audit.db.refresh(admin)
+    if admin.totp_pending_secret != pending:
+        raise ApiError(409, "the setup changed meanwhile — start again")
+    admin.totp_secret, admin.totp_pending_secret, admin.totp_last_step = pending, None, step
+    admin.recovery_codes = hashes
     await sessions.revoke_all(audit.db, admin.id, keep_id=principal.session_id)
     audit.record("auth.totp_enabled", "admin", admin.id, admin.username)
     await audit.db.commit()
@@ -242,8 +269,11 @@ async def totp_disable(body: DisableIn, principal: Principal = Depends(signed_in
     admin = await _admin(audit.db, principal)
     if not admin.totp_secret:
         raise ApiError(409, "two-factor authentication is not enabled")
-    step = totp.match(admin.totp_secret, body.code, admin.totp_last_step)
-    if not await verify_password(body.password, admin.password_hash) or step is None:
+    await release(audit.db)
+    password_ok = await verify_password(body.password, admin.password_hash)
+    await audit.db.refresh(admin)
+    step = totp.match(admin.totp_secret, body.code, admin.totp_last_step) if admin.totp_secret else None
+    if not password_ok or step is None:
         raise ApiError(403, "password or code is wrong")
     admin.totp_secret, admin.totp_last_step, admin.recovery_codes = None, None, []
     await sessions.revoke_all(audit.db, admin.id, keep_id=principal.session_id)

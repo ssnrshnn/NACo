@@ -214,10 +214,11 @@ async def update_admin(admin_id: int, body: AdminUpdate, principal: Principal = 
 @router.post("/admins/{admin_id}/reset-password", response_model=TemporaryPassword)
 async def reset_admin_password(admin_id: int, principal: Principal = Depends(superuser),
                                audit: AuditTrail = Depends(audit_trail)) -> TemporaryPassword:
+    password = secrets.token_urlsafe(15)
+    digest = await hash_password(password)  # before the first query: no lock held meanwhile
     admin = await get_or_404(audit.db, AdminUser, admin_id, "administrator")
     _not_self(principal, admin)
-    password = secrets.token_urlsafe(15)
-    admin.password_hash = await hash_password(password)
+    admin.password_hash = digest
     admin.must_change_password = True
     await admin_sessions.revoke_all(audit.db, admin.id)
     audit.record("admin.password_reset", "admin", admin.id, admin.username)

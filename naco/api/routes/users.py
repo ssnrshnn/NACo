@@ -126,10 +126,11 @@ async def get_user(user_id: int, _: Principal = Depends(viewer), db: AsyncSessio
 async def create_user(body: UserCreate, principal: Principal = Depends(operator),
                       audit: AuditTrail = Depends(audit_trail)) -> UserOut:
     db = audit.db
+    digest = await hash_password(_password(body.password))  # before the first query: no lock held meanwhile
     group = await _group(db, body.group_id)
     _guard_device_admin(principal, group)
     user = User(username=body.username, source=UserSource.LOCAL,
-                password_hash=await hash_password(_password(body.password)), email=body.email,
+                password_hash=digest, email=body.email,
                 full_name=body.full_name, group_id=body.group_id, enabled=body.enabled)
     db.add(user)
     await flush_or_conflict(db, f"user {body.username} already exists")
@@ -142,9 +143,11 @@ async def create_user(body: UserCreate, principal: Principal = Depends(operator)
 async def update_user(user_id: int, body: UserUpdate, principal: Principal = Depends(operator),
                       audit: AuditTrail = Depends(audit_trail)) -> UserOut:
     db = audit.db
+    changes = body.model_dump(exclude_unset=True)
+    # Hash before the first query, so no lock is held meanwhile.
+    digest = await hash_password(_password(changes["password"])) if changes.get("password") is not None else None
     user = await get_or_404(db, User, user_id, "user")
     current = await _group(db, user.group_id)
-    changes = body.model_dump(exclude_unset=True)
     target = await _group(db, changes["group_id"]) if "group_id" in changes else current
     _guard_device_admin(principal, current, target)
     before = snapshot(user, USER_FIELDS)
@@ -154,10 +157,10 @@ async def update_user(user_id: int, body: UserUpdate, principal: Principal = Dep
     if "group_id" in changes:
         user.group_id = changes["group_id"]
     secret_changed = []
-    if changes.get("password") is not None:
+    if digest is not None:
         if user.source is not UserSource.LOCAL:
             raise ApiError(422, "LDAP users sign in with their directory password")
-        user.password_hash = await hash_password(_password(changes["password"]))
+        user.password_hash = digest
         secret_changed = ["password"]
     after = snapshot(user, USER_FIELDS)
     delta = diff(before, after)

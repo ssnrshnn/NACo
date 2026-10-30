@@ -86,6 +86,17 @@ def session_factory() -> async_sessionmaker[AsyncSession]:
     return _factory
 
 
+async def release(db: AsyncSession) -> None:
+    """End the open transaction before slow work — bcrypt, LDAP, the network.
+
+    Every transaction holds SQLite's write lock (BEGIN IMMEDIATE), and RADIUS
+    decisions wait behind it. Loaded objects stay usable (expire_on_commit is
+    off); call this only when nothing is pending, or pending work is complete.
+    """
+    if db.in_transaction():
+        await db.commit()
+
+
 async def get_db() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency."""
     async with session_factory()() as session:

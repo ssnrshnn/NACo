@@ -254,3 +254,75 @@ async def test_health_is_public_and_quiet(api):
     async with api.sf() as db:
         assert (await db.execute(select(func.count()).select_from(AuditLog))).scalar_one() == 0
     assert TOTP_SECRET
+
+
+# ── bcrypt never runs under the database write lock ─────────────────────────
+
+@pytest.fixture
+def lock_probe(monkeypatch):
+    """Wrap bcrypt so each call first checks that SQLite's write lock is free:
+    a transaction held across bcrypt would stall every RADIUS decision."""
+    import sqlite3
+
+    from naco.api.routes import auth as auth_routes
+    from naco.core import passwords
+    from naco.db.engine import get_engine
+
+    path = get_engine().url.database
+    probe = type("Probe", (), {"calls": 0, "locked": []})()
+
+    def checked(fn, name):
+        def wrapper(*args):
+            probe.calls += 1
+            conn = sqlite3.connect(path, timeout=0)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.rollback()
+            except sqlite3.OperationalError:
+                probe.locked.append(name)
+            finally:
+                conn.close()
+            return fn(*args)
+        return wrapper
+
+    monkeypatch.setattr(passwords, "hash_password_sync", checked(passwords.hash_password_sync, "hash"))
+    monkeypatch.setattr(passwords, "verify_password_sync", checked(passwords.verify_password_sync, "verify"))
+    monkeypatch.setattr(auth_routes, "verify_password_sync", checked(auth_routes.verify_password_sync, "recovery"))
+    return probe
+
+
+async def test_bcrypt_runs_without_holding_the_write_lock(api, lock_probe):
+    await make_admin(api.sf, totp=False)
+    assert (await api.post(LOGIN, json={"username": "nobody", "password": "guess"})).status_code == 401
+    await sign_in(api, totp_code="")
+    setup = (await api.post("/api/v1/auth/totp/setup", json={"password": "correct-horse-battery"})).json()
+    recovery = (await api.post("/api/v1/auth/totp/confirm", json={"code": code(setup["secret"])})).json()
+    fresh = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_public_app()), base_url=BASE)
+    body = {"username": "root", "password": "correct-horse-battery", "totp_code": recovery["recovery_codes"][3]}
+    assert (await fresh.post(LOGIN, json=body)).status_code == 200
+    await fresh.aclose()
+    assert (await api.post("/api/v1/auth/password", json={"current_password": "correct-horse-battery",
+                                                          "new_password": "a-brand-new-passphrase"})).status_code == 204
+    user = (await api.post("/api/v1/users", json={"username": "u1", "password": "user-password"})).json()
+    assert (await api.patch(f"/api/v1/users/{user['id']}", json={"password": "other-password"})).status_code == 200
+    other = await make_admin(api.sf, "second", AdminRole.VIEWER)
+    assert (await api.post(f"/api/v1/admins/{other.id}/reset-password")).status_code == 200
+    assert (await api.post("/api/v1/auth/totp/disable", json={"password": "a-brand-new-passphrase",
+                                                              "code": code(setup["secret"], offset=1)})).status_code == 204
+    assert lock_probe.calls >= 20
+    assert lock_probe.locked == []
+
+
+async def test_concurrent_sign_ins_cannot_share_a_recovery_code(api):
+    import asyncio
+    await make_admin(api.sf, totp=False)
+    await sign_in(api, totp_code="")
+    setup = (await api.post("/api/v1/auth/totp/setup", json={"password": "correct-horse-battery"})).json()
+    recovery = (await api.post("/api/v1/auth/totp/confirm", json={"code": code(setup["secret"])})).json()
+    body = {"username": "root", "password": "correct-horse-battery", "totp_code": recovery["recovery_codes"][0]}
+    clients = [httpx.AsyncClient(transport=httpx.ASGITransport(app=create_public_app()), base_url=BASE)
+               for _ in range(3)]
+    results = await asyncio.gather(*(c.post(LOGIN, json=body) for c in clients))
+    for c in clients:
+        await c.aclose()
+    assert sorted(r.status_code for r in results) == [200, 401, 401]
