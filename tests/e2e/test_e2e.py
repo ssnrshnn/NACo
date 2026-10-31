@@ -5,6 +5,7 @@ Run with:  pytest -m e2e tests/e2e   (needs Docker; builds three images)
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -224,10 +225,20 @@ def tls(name: str) -> str:
 '''
 
 
+def accepted_user_name(out: str) -> str | None:
+    """The User-Name an Access-Accept gives the NAS — the name it shows and puts in accounting."""
+    _, _, accept = out.partition("(Access-Accept)")
+    found = re.search(r"Attribute 1 \(User-Name\) length=\d+\n\s+Value: '([^']*)'", accept)
+    return found.group(1) if found else None
+
+
 def test_eap_ttls_pap():
-    assert eapol(ttls("erin", ERIN_PW))
+    proc = eapol_run(ttls("erin", ERIN_PW))
+    assert proc.returncode == 0, proc.stdout[-2000:]
     log = state()["logs"][0]
     assert (log["result"], log["username"], log["method"], log["vlan"]) == ("ACCEPT", "erin", "EAP-TTLS", 10)
+    # The NAS learns who NACo verified inside the tunnel, not the anonymous outer identity.
+    assert accepted_user_name(proc.stdout) == "erin"
 
 
 def test_eap_ttls_wrong_password():
@@ -236,9 +247,11 @@ def test_eap_ttls_wrong_password():
 
 
 def test_peap_gtc():
-    assert eapol(peap("erin", ERIN_PW))
+    proc = eapol_run(peap("erin", ERIN_PW))
+    assert proc.returncode == 0, proc.stdout[-2000:]
     log = state()["logs"][0]
     assert (log["result"], log["username"], log["method"]) == ("ACCEPT", "erin", "PEAP")
+    assert accepted_user_name(proc.stdout) == "erin"
 
 
 def test_peap_gtc_wrong_password():
