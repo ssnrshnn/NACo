@@ -28,14 +28,17 @@ profile**, whatever the RADIUS policies say.
 
    Patterns match the whole command line, case-insensitively, with
    abbreviations already expanded by the device (`sh run` arrives as
-   `show running-config`). Without a command set, every command up to the
-   group's privilege level is allowed.
+   `show running-config`). Without a command set, NACo allows every
+   command, and the device itself limits the user to the level NACo gave.
 4. Users log in with their NACo or LDAP / AD password. *Logs → TACACS+*
    shows every login, `enable`, authorized or refused command and the
    accounting records.
 
 Authentication supports ASCII (interactive) and PAP logins and `enable`,
-which is granted up to the group's privilege level.
+which is granted up to the group's privilege level. The level a device
+puts in a login or authorization request is not a claim NACo checks —
+Extreme Switch Engine asks for 15 every time: the session gets the level
+NACo answers when the shell starts.
 
 ## Cisco IOS-XE
 
@@ -84,6 +87,7 @@ service with no line is refused. Lines for `shell` are sent along with
 | Device | Service it asks for | Lines on the NACo group |
 |---|---|---|
 | Cisco IOS, IOS-XE, Arista EOS, Aruba AOS-CX and AOS-S | `shell` | none — the privilege level is enough |
+| Extreme Switch Engine (EXOS) | `shell` | none — level 15 is read-write, lower levels read-only (tested on 33.6.1) |
 | Cisco NX-OS | `shell` | a role, e.g. `shell: shell:roles*"network-admin"` (`*`: optional, so IOS-XE logins of the same group ignore it) |
 | HPE Comware, H3C | `shell` | a role, e.g. `shell: roles="network-admin"` |
 | Juniper Junos | `junos-exec` | the login class template, e.g. `junos-exec: local-user-name=remote-admin` |
