@@ -1,7 +1,10 @@
 # MikroTik
 
 This page covers MikroTik RouterOS 7.15 and later (checked against the 7.26
-manual) in three roles:
+manual) in three roles. The wired role was tested with RouterOS 7.25 (CHR):
+802.1X, MAC authentication, VLANs, accounting, Disconnect, the server-fail
+VLAN and router logins, as described below. The wireless roles were not
+tested.
 
 - **wired**: `/interface dot1x server`, 802.1X and MAC authentication on
   switch and router ports;
@@ -78,9 +81,18 @@ Bridge VLAN filtering must already be on, with `<users-vlan>`,
 /interface bridge port set [find interface=<access-port>] edge=yes
 /interface dot1x server
 add interface=<access-port> auth-types=dot1x,mac-auth \
-    accounting=yes interim-update=5m reauth-period=1h \
+    accounting=yes interim-update=5m \
     server-fail-vlan-id=<critical-vlan> comment=NACo
 ```
+
+Leave `reauth-period` unset on ports with `mac-auth`. RouterOS 7.25
+re-authenticates a MAC client with an **empty User-Name** when the device
+has sent nothing since the previous authentication — a printer asleep, a
+quiet sensor. No server can accept that, and the port then stays
+`rejected-holding` even after the device talks again (in the lab, for as
+long as it was watched); disabling and enabling the port's dot1x server
+entry clears it. Without `reauth-period` there is no re-authentication (the
+default), and NACo's Disconnect applies its changes anyway.
 
 - **The port is port-based.** After one client authenticates, traffic from
   every host on the port is accepted. To limit the port to the authenticated
@@ -98,16 +110,31 @@ add interface=<access-port> auth-types=dot1x,mac-auth \
   `vlan-filtering=yes`; only devices with hardware-offloaded VLAN filtering
   do it in the switch chip. Send numeric VLAN IDs.
 - **Accounting**: on by default, but `interim-update` defaults to 0 (none).
-  Set it as above.
-- **Disconnect**: MikroTik does not document it for the dot1x server.
-  Assume it does not work. `reauth-period` makes NACo's changes take effect
-  at the next re-authentication; for MAC authentication it re-checks the
-  last seen MAC.
+  Set it as above. It carries no Framed-IP-Address, so the
+  [guest portal](../guest-portal.md) cannot find a wired client's address.
+- **MAC authentication** sends the MAC as User-Name, an empty password and
+  `Service-Type = Framed`; NACo takes that as MAB.
+- **Disconnect** works (not documented by MikroTik, tested on 7.25): the
+  router ACKs NACo's Disconnect-Request and ends the session. An 802.1X
+  client authenticates again at once, a MAC client with its next frame,
+  and gets NACo's new decision — approving a pending device moves it from
+  the onboarding to its own VLAN within seconds.
 - **When NACo cannot be reached**: FreeRADIUS does not answer at all.
   `server-fail-vlan-id` (7.2 and later, needs `vlan-filtering`) puts the
-  port in the critical VLAN once the request times out. Without it, the
-  client simply gets no access. `reject-vlan-id` applies to an
-  Access-Reject only.
+  port in the critical VLAN once the request times out (`auth-info` reads
+  `mac-auth (server fail vlan)`). Without it, the client simply gets no
+  access. `reject-vlan-id` applies to an Access-Reject only. A client that
+  is already authorized keeps its access when a re-authentication times
+  out.
+- **After an outage** a port leaves the server-fail VLAN only when it
+  authenticates again — at `reauth-period`, which this page advises against
+  for MAC ports, or when its link goes down and up. RouterOS sends no
+  accounting for these sessions, so NACo cannot disconnect them. Bounce the
+  affected ports (`/interface dot1x server disable`, then `enable`) once
+  NACo is back.
+- **User name**: for EAP-TTLS and PEAP, `active print` shows the outer
+  identity (`anonymous`); RouterOS ignores the User-Name in NACo's
+  Access-Accept. *Sessions* in NACo shows the real user.
 
 ## Wireless: `wifi` package
 
@@ -201,8 +228,8 @@ add name=naco-mab mode=none radius-mac-authentication=yes radius-mac-accounting=
 ## Router logins
 
 RouterOS has no TACACS+. Its logins over RADIUS (`service=login` and `/user
-aaa set use-radius=yes`) use MS-CHAPv2, which NACo does not support. NACo
-therefore cannot authenticate RouterOS logins. Keep local accounts.
+aaa set use-radius=yes`) use MS-CHAPv2 (seen on 7.25), which NACo does not
+support: NACo rejects them. Keep local accounts.
 
 ## Verify
 
@@ -231,7 +258,8 @@ Then check in NACo:
 2. The client is in the right VLAN (`vlan-id` in the active sessions or the
    registration table).
 3. *Sessions* shows the session with Start and interim updates.
-4. *Sessions → Disconnect* returns ACK on `wifi`.
+4. *Sessions → Disconnect* returns ACK (tested on dot1x ports; expected on
+   `wifi`).
 5. Stop NACo (`docker compose stop naco`) and wait a minute: FreeRADIUS
    keeps answering the first steps of an EAP exchange for up to a minute.
    Then connect a wired client: `auth-info` reads `dot1x (server fail
@@ -239,26 +267,18 @@ Then check in NACo:
 
 ## Check in the pilot
 
-- **Disconnect on dot1x ports**: not documented. Try *Sessions →
-  Disconnect* and watch `/radius incoming monitor`. If it NAKs, rely on
-  `reauth-period`.
 - **Disconnect on `wifi` and CAPsMAN**: MikroTik does not say which
   attributes it uses to find the session. Check that NACo's request is
   ACKed. Stand-alone legacy APs are not documented at all.
-- **Wired MAC password**: what the dot1x server sends as password with the
-  default `mac-auth-mode=mac-as-username` is not documented (probably
-  nothing). NACo accepts no password, an empty one, or the MAC. If *Logs*
-  shows wired MAB as a rejected password login, set
-  `mac-auth-mode=mac-as-username-and-password`.
 - **VLAN on `wifi`**: only users report that `Mikrotik-Wireless-VLANID`
   works, and others report failures (wifi-qcom 7.23.1 with PEAP,
   wifi-qcom-ac). Test it on your hardware.
-- **Client IP for the guest portal**: Framed-IP-Address is not documented.
-  The dot1x server most likely sends none. Legacy wireless reports the
-  "last seen IP" since 6.44; its attribute is not named. Check *Sessions*
-  before you use the [guest portal](../guest-portal.md).
-- **Outages on wired ports**: what happens at `reauth-period` while NACo
-  cannot decide, and when a port leaves the server-fail VLAN afterwards.
+- **Client IP for the guest portal** on wireless: legacy wireless reports
+  the "last seen IP" since 6.44; its attribute is not named. Check
+  *Sessions* before you use the [guest portal](../guest-portal.md).
+- **Empty User-Name on re-authentication** (see the wired section): if a
+  quiet MAC client loses access and *Logs* shows a PAP reject with no user
+  name, a `reauth-period` is set on its port.
 - **Outages on wireless**: whether a cached MAC-authentication reply
   (`aaa.mac-caching`, `radius-mac-caching`) is used while NACo is silent.
 - **Timers**: RouterOS resends after `timeout` (1100 ms by default). It

@@ -2,6 +2,38 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+Three devices were run against NACo in a lab — MikroTik RouterOS 7.25,
+Extreme Switch Engine 33.6.1 and hostapd 2.11 — and their pages now say
+what was seen there.
+
+### Fixed
+
+- **TACACS+ logins on Extreme Switch Engine.** It asks for privilege 15 in
+  every login, authorization and command request; NACo refused everyone
+  below level 15. The level a device asks for is now checked only for
+  `enable`; the session gets the group's level from shell authorization,
+  and commands are checked against the group's command set.
+
+### Changed
+
+- For EAP-TTLS and PEAP, the Access-Accept carries the name NACo verified
+  inside the tunnel as User-Name (RFC 2865 §5.1), so devices that honour it
+  show and account the real user instead of `anonymous`.
+
+### Documentation
+
+- MikroTik: Disconnect works on dot1x ports; leave `reauth-period` unset on
+  MAC-authentication ports — RouterOS 7.25 re-authenticates a quiet device
+  with an empty User-Name and then keeps the port blocked; ports leave the
+  server-fail VLAN only when they authenticate again.
+- Extreme: Disconnect needs ONEPolicy (`configure policy maptable response
+  tunnel` keeps NACo's VLANs), which rules out the service-unavailable
+  VLAN; that VLAN needs `database-order radius` for MAC clients; 33.6.1
+  sends Message-Authenticator in MAC authentication and no interim
+  accounting; levels and command authorization over TACACS+.
+
 ## 3.1.0 — 2026-10-30
 
 Support for the network devices most organizations run, from each vendor's
