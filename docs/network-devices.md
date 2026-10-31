@@ -26,9 +26,18 @@ enforcement.
 | [Ubiquiti UniFi](vendors/unifi.md) | UniFi switches and access points | Standard |
 | [TP-Link Omada](vendors/omada.md) | Omada switches and access points | Standard |
 
-The vendor pages are written from each vendor's documentation, not tested on
-every model; each ends with what to check in the pilot. Another vendor that
-follows RFC 3580 and RFC 5176 works with the *Standard* device type.
+The vendor pages are written from each vendor's documentation; each ends
+with what to check in the pilot. Another vendor that follows RFC 3580 and
+RFC 5176 works with the *Standard* device type.
+
+Three were also run against NACo in a lab, as virtual machines and
+software: **MikroTik RouterOS 7.25** (wired dot1x server), **Extreme Switch
+Engine 33.6.1** (NetLogin and TACACS+) and **hostapd 2.11**, the 802.1X
+authenticator inside OpenWrt and many access points (wired, with its
+Disconnect server requiring Event-Timestamp and Message-Authenticator).
+802.1X, MAC authentication, VLANs, accounting, disconnects — by hand and
+after a change in NACo — and the behaviour while NACo is down work as their
+pages describe; the pages also say where each device needs care.
 
 ## Adding a client
 
@@ -83,7 +92,10 @@ treated as a password login.
 the policy's reply attributes, named as in FreeRADIUS' dictionaries
 (`Cisco-AVPair`, `Aruba-User-Role`, `Filter-Id`, …). A permit without a VLAN
 leaves the client on the port's or SSID's own VLAN on most devices; the
-vendor pages note exceptions.
+vendor pages note exceptions. For EAP-TTLS and PEAP the Access-Accept also
+carries the name NACo verified inside the tunnel as User-Name, so devices
+that honour it (hostapd does) show and account the real user instead of
+the anonymous outer identity.
 
 **SSID** conditions use the SSID from `Called-Station-Id`
 (`<MAC>:<SSID>`), or, when that has none, from `Called-Station-SSID`,

@@ -2,9 +2,10 @@
 
 This page covers Extreme Switch Engine (EXOS) switches, with Network Login
 (NetLogin) for 802.1X and MAC authentication, and administrator logins over
-TACACS+. It follows the Switch Engine 32.7.1 documentation, the newest that
-could be read; 33.x was not reviewed. Choose the device type **Extreme
-Networks**. ExtremeCloud IQ wireless was not verified; see the
+TACACS+. It follows the Switch Engine 32.7.1 documentation and was tested
+with Switch Engine 33.6.1 (the EXOS VM): 802.1X, MAC authentication, VLANs,
+accounting, Disconnect, the service-unavailable VLAN and TACACS+ logins with
+command authorization. Choose the device type **Extreme Networks**. ExtremeCloud IQ wireless was not verified; see the
 [last section](#extremecloud-iq-wireless--not-verified).
 
 Read [network devices](../network-devices.md) for what NACo expects from
@@ -21,20 +22,21 @@ every device, and run [a pilot](../pilot.md) before you enforce anything.
 | Shared secret | 16+ characters, the same as `shared-secret` on the switch |
 | Device type | Extreme Networks |
 | CoA port | 3799 |
-| Require Message-Authenticator | **off** |
+| Require Message-Authenticator | on (see below) |
 
-Switch *Require Message-Authenticator* off; the panel then shows the
-client as **Legacy NAS**. Switch Engine adds Message-Authenticator to 802.1X
-(EAP) requests only, not to MAC-authentication requests. With the setting
-on, NACo drops every MAC authentication. If a newer release adds the
-attribute, turn the setting back on.
+Switch Engine 33.6.1 puts Message-Authenticator in MAC-authentication
+requests too, so leave *Require Message-Authenticator* on. The 32.7.1
+documentation suggests older releases add it to 802.1X (EAP) requests only:
+if MAC authentications go unanswered and `docker compose logs freeradius`
+says the packet has no Message-Authenticator, switch the setting off for
+that client (the panel then shows it as **Legacy NAS**) or upgrade.
 
 With the Extreme type, a disconnect request carries Calling-Station-Id and
 NAS-IP-Address, exactly as the switch reported them in accounting and only
 when it did, plus Message-Authenticator. Nothing else is included. Switch
-Engine identifies a session by port and MAC address. It does not implement
-Acct-Session-Id, and it fails a disconnect request that carries attributes
-it does not understand.
+Engine identifies a session by MAC address; it answers *Missing-Attribute*
+without NAS-IP-Address and *Invalid-Attribute-Value* for a MAC without
+separators. Disconnects need ONEPolicy — see [below](#disconnect-coa).
 
 NACo sends only Disconnect-Requests, never a CoA-Request, so it cannot
 bounce a port. A wired MAC-authenticated device (a printer) that NACo moves
@@ -61,6 +63,7 @@ enable netlogin ports <ports> dot1x mac
 configure netlogin ports <ports> mode mac-based-vlans
 configure netlogin authentication service-unavailable vlan <critical-vlan-name> ports <ports> untagged
 enable netlogin authentication service-unavailable vlan ports <ports>
+configure netlogin mac authentication database-order radius
 configure radius dynamic-authorization 1 server <naco-ip> client-ip <switch-ip> vr VR-Default shared-secret <shared-secret>
 enable radius dynamic-authorization
 ```
@@ -78,20 +81,26 @@ enable radius dynamic-authorization
 - `mode mac-based-vlans` lets several devices on one port sit in different
   untagged VLANs.
 - `<critical-vlan-name>` is the name of the VLAN with ID `<critical-vlan>`.
+- `database-order radius` — without it, MAC authentication also asks the
+  switch's local database and fails instead of using the critical VLAN
+  while NACo cannot be reached.
+- Disconnects need ONEPolicy, which rules out the `service-unavailable`
+  lines; read [Disconnect](#disconnect-coa) before you choose.
 
 ### Accounting
 
-Switch Engine documents only Start and Stop records: no interim updates,
-and no Framed-IP-Address. That has two consequences:
+Switch Engine sends only Start and Stop records: no interim updates (33.6.1
+ignores `Acct-Interim-Interval` in the Access-Accept), and no
+Framed-IP-Address. A re-authentication sends no new Start either. That has
+two consequences:
 
 - The [guest portal](../guest-portal.md) cannot learn the client's IP
   address from these switches, so it is not available on them.
 - NACo closes sessions that have had no accounting for 24 hours. A device
   connected for longer drops out of *Sessions*, and later policy changes
-  no longer disconnect it.
-
-The switch accepts `Acct-Interim-Interval` in the Access-Accept. Whether
-it then sends interim updates is not known; see the pilot list.
+  no longer disconnect it. Where devices stay connected for days, raise
+  `radius.stale_session_hours` in `config/config.yaml` (up to 720, see
+  [configuration](../configuration.md)).
 
 ### Disconnect (CoA)
 
@@ -106,9 +115,35 @@ later can skip the check:
 configure radius dynamic-authorization 1 nas-ip ignore
 ```
 
-Extreme states: "In order to use CoA/Disconnect, ONEPolicy must be enabled
-with NetLogin." How that interacts with plain VLAN assignment is not
-known. Test disconnects early in the pilot.
+As Extreme states, disconnects need ONEPolicy. Without it, the switch
+answers every Disconnect-Request with a NAK, *Session-Context-Not-Found*,
+whatever it carries. With ONEPolicy, and the policy map told to take the
+VLAN from NACo's RFC 3580 attributes, the switch ACKs and NACo's changes
+apply at once — blocking a device ends its session, and it is rejected
+when it tries again:
+
+```text
+enable policy
+configure policy maptable response tunnel
+configure policy vlanauthorization enable
+enable netlogin dot1x mac
+```
+
+Two costs come with it:
+
+- **No service-unavailable VLAN.** With ONEPolicy the
+  `service-unavailable` commands no longer exist: while NACo cannot
+  decide, new clients get no access at all.
+- `enable policy` and `disable policy` clear NetLogin settings (the
+  NetLogin VLAN, port modes, the global methods). Enter the NetLogin
+  commands from [Switch Engine](#switch-engine-exos) again afterwards,
+  without the `service-unavailable` lines under ONEPolicy.
+
+Choose one: **ONEPolicy** — NACo's changes take effect at once, nobody new
+gets in during an outage; or **no ONEPolicy** — a critical VLAN during
+outages, and NACo's changes take effect only when a client authenticates
+again (802.1X clients every hour by default; MAC clients are not
+re-authenticated by default).
 
 ### When NACo cannot be reached
 
@@ -118,9 +153,11 @@ Engine then puts devices that authenticate in the *service-unavailable*
 VLAN. Up to 10 of these VLANs per port are possible since 30.2. Rules:
 
 - It applies only when RADIUS is the only authentication method; a reject
-  from NACo is honoured.
+  from NACo is honoured. For MAC clients that needs `database-order
+  radius` (above).
+
 - It does not apply to 802.1X or MAC clients on ports that also do web
-  authentication.
+  authentication, nor with ONEPolicy (above).
 - MAC re-authentication is off by default (`reauth-period` 0), so MAC
   clients already connected keep their access.
 
@@ -137,7 +174,12 @@ exchange for up to a minute, then goes silent.
   later) `configure netlogin mac username case (lower|upper)` change the
   format; NACo accepts all of them. Because of Call-Check, a MAC-list
   password does not stop NACo from treating the request as MAB.
-  Calling-Station-Id is hyphenated.
+  Calling-Station-Id is hyphenated. A port with both methods runs MAC
+  authentication for an 802.1X client too; the 802.1X result wins, but
+  *Devices* lists the client's MAC as pending.
+- **User name.** For EAP-TTLS and PEAP the switch shows and accounts the
+  outer identity (`anonymous`); it ignores the User-Name in NACo's
+  Access-Accept. *Sessions* in NACo shows the real user.
 - **VLAN.** NACo sends the policy's VLAN as a number. That works for VLANs
   configured on the switch. `configure netlogin dynamic-vlan enable` (with
   uplink ports) creates missing ones, by ID only. Extreme's own attributes
@@ -172,13 +214,19 @@ enable tacacs-authorization
   `<tacacs-key>`. Give the admin group a **Device-admin privilege**, and
   optionally a command set ([TACACS+](../tacacs.md)).
 - Switch Engine has two levels, read-only and read-write, and reads
-  `priv-lvl` from the authorization answer. NACo sends the group's level
-  when a device asks for the `shell` service. With `configure tacacs
-  priv-lvl optional` (the default, 22.5 and later), a login without
-  `priv-lvl` is read-only.
+  `priv-lvl` from the authorization answer: level 15 is read-write (`#`
+  prompt), anything lower read-only (`>`). It asks for level 15 in every
+  request; NACo answers with the group's level regardless. With
+  `configure tacacs priv-lvl optional` (the default, 22.5 and later), a
+  login without `priv-lvl` is read-only.
 - `enable tacacs-authorization` sends every command to NACo before it
-  runs, so the group's command set applies. Enable it last, after a test
-  login works.
+  runs, as typed (`show switch | include Name`) with the `shell` service,
+  so the group's command set applies. Command sets match the whole line,
+  so `show *` also permits `show … | include …`. The *save configuration?*
+  question at logout is a command too. Enable it last, after a test login
+  works.
+- With `enable tacacs-accounting`, NACo logs every command as well as the
+  session start and stop.
 - The local database is used only when TACACS+ is unavailable. A user NACo
   rejects cannot log in with a local password. Keep a local `admin`
   account, and test from a second session before you close the first.
@@ -214,13 +262,10 @@ the access points' network as one RADIUS client. Check in the pilot:
 
 ## Check in the pilot
 
-- **Disconnects.** Whether they work without ONEPolicy. Whether the switch
-  acknowledges the Extreme type's request. If the NAS-IP-Address check
-  fails, use `nas-ip ignore`.
+- **Disconnects** on hardware with ONEPolicy, and whether your switch
+  needs `nas-ip ignore`.
 - **Message-Authenticator** in MAC-authentication requests on releases
-  newer than 32.7.1. 32.7.1's release notes say nothing about BlastRADIUS.
-- **Interim updates.** Add `Acct-Interim-Interval` as a reply attribute
-  to a test policy, then watch *Sessions* for updates.
+  before 33.6.1.
 - **During an outage.** What happens when an 802.1X client re-authenticates
   while NACo is down.
 - **Before 31.3.** Add the default MAC list by hand (command reference:
@@ -229,14 +274,8 @@ the access points' network as one RADIUS client. Check in the pilot:
   not, FreeRADIUS logs an unknown client.
 - **Calling-Station-Id case.** It does not matter to NACo, but check it in
   *Logs*.
-- **TACACS+.**
-  - Which service the switch names in command authorization. If it is not
-    `shell`, NACo refuses it unless the group lists lines for that service
-    under **TACACS+ attributes for other vendors**.
-  - Whether commands arrive expanded or as typed.
-  - Which NACo level gives read-write.
-  - Whether a login NACo does not authorize still gets in, read-only, with
-    `priv-lvl optional`.
+- **TACACS+**: whether a login NACo does not authorize still gets in,
+  read-only, with `priv-lvl optional`.
 
 ## References
 

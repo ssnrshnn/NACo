@@ -127,6 +127,14 @@ server default {
 		elsif (&control:NACo-Decision != "accept") {
 			reject
 		}
+		# Give the NAS the name NACo verified inside the tunnel instead of
+		# the anonymous outer identity: it shows that name and reports it in
+		# accounting (RFC 2865, 5.1).
+		elsif (&NACo-Inner-Identity) {
+			update reply {
+				&User-Name := &NACo-Inner-Identity
+			}
+		}
 
 		Post-Auth-Type REJECT {
 			attr_filter.access_reject

@@ -205,6 +205,26 @@ async def test_authorization_interop(tacacs):
     assert ("configure terminal", "FAIL") in commands and ("show version", "PASS") in commands
 
 
+async def test_a_login_gets_the_groups_level_whatever_the_device_asks(tacacs):
+    # Switch Engine (EXOS) puts priv_lvl 15 in every login, shell and command
+    # request. The level is NACo's answer to shell authorization, not a claim.
+    def login(user, pw):
+        return client(tacacs).authenticate(user, pw, priv_lvl=15, authen_type=TAC_PLUS_AUTHEN_TYPE_PAP).valid
+
+    def author(user, args):
+        reply = client(tacacs).authorize(user, arguments=[a.encode() for a in args], priv_lvl=15)
+        return reply.valid, [a.decode() for a in (reply.arguments or [])]
+
+    assert await asyncio.to_thread(login, "hd", "hd-password")
+    assert not await asyncio.to_thread(login, "hd", "wrong")
+    # (The client library itself fails a level below the one it asked for.)
+    assert (await asyncio.to_thread(author, "hd", ["service=shell", "cmd="]))[1] == ["priv-lvl=7"]
+    assert (await logs(tacacs, TacacsKind.AUTHOR))[-1].result == "PASS"
+    assert (await asyncio.to_thread(author, "hd", ["service=shell", "cmd=show", "cmd-arg=version"]))[0]
+    assert not (await asyncio.to_thread(author, "hd", ["service=shell", "cmd=configure", "cmd-arg=terminal"]))[0]
+    assert not await asyncio.to_thread(login, "alice", "alice-password")  # still no device-admin rights
+
+
 async def test_other_services_get_the_groups_attributes(tacacs):
     def author(user, args):
         reply = client(tacacs).authorize(user, arguments=[a.encode() for a in args])

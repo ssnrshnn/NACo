@@ -152,7 +152,10 @@ class _Connection:
         if not rights.allowed:
             return await self._authen_fail(start, result.username, rights.reason)
         assert result.user is not None
-        if enable or start.priv_lvl > 1:
+        # Only enable asks for a level. A login's priv_lvl is what the device
+        # would like (Switch Engine always says 15); the session gets the level
+        # NACo answers to shell authorization.
+        if enable:
             level = privilege_allowed(result.user, start.priv_lvl)
             if not level.allowed:
                 return await self._authen_fail(start, result.username, level.reason)
@@ -194,9 +197,8 @@ class _Connection:
             await self.record(TacacsKind.AUTHOR, username, req.rem_addr, req.port, req.priv_lvl, service, "PASS",
                               ", ".join(extra)[:255])
             return p.author_reply(p.AUTHOR_PASS_ADD, extra)
-        level = privilege_allowed(user, req.priv_lvl)
-        if not level.allowed:
-            return await deny(level.reason)
+        # The request's priv_lvl is not checked here either: the device applies
+        # the level given at shell start, and the command set decides commands.
         if not cmd:  # exec/shell start: tell the device the user's level
             await self.record(TacacsKind.AUTHOR, username, req.rem_addr, req.port, req.priv_lvl, line, "PASS",
                               f"priv-lvl {user.device_admin_privilege}")

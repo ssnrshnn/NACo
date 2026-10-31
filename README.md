@@ -114,7 +114,7 @@ for signed-in administrators and API tokens); tokens are created under
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.lock && pip install -e '.[dev]'
 pytest                       # unit and API tests
-pytest -m e2e tests/e2e      # real FreeRADIUS, RADIUS and EAP clients (Docker)
+pytest -m e2e tests/e2e      # real FreeRADIUS, hostapd, RADIUS and EAP clients (Docker)
 pytest -m ui tests/ui        # the admin panel in a browser (Playwright)
 ruff check . && mypy naco
 NACO_DEV=1 naco              # run locally on :8080 with development secrets

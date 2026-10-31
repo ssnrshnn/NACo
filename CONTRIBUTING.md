@@ -23,7 +23,7 @@ Everything CI runs, locally:
 ruff check .
 mypy naco
 pytest                           # unit and API tests (seconds)
-pytest -m e2e tests/e2e          # FreeRADIUS + RADIUS/EAP clients in Docker (minutes)
+pytest -m e2e tests/e2e          # FreeRADIUS, hostapd + RADIUS/EAP clients in Docker (minutes)
 pytest -m ui tests/ui            # the panel in Chromium: playwright install chromium
 shellcheck quickstart.sh scripts/*.sh
 ```

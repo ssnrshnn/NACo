@@ -1,9 +1,22 @@
 """Seed the e2e NACo database (piped into `python -` inside the naco container)."""
 import asyncio
+import hashlib
 
 from naco.core.passwords import hash_password_sync
 from naco.db.engine import init_engine, session_factory
-from naco.db.models import Device, DeviceStatus, Group, NasClient, Policy, PolicyAction, User
+from naco.db.models import (
+    AdminRole,
+    ApiToken,
+    Device,
+    DeviceStatus,
+    Group,
+    NasClient,
+    Policy,
+    PolicyAction,
+    User,
+)
+
+API_TOKEN = "naco_e2e-operator-token-0123456789abcdef"
 
 
 async def main() -> None:
@@ -14,6 +27,10 @@ async def main() -> None:
         await db.flush()
         db.add_all([
             NasClient(name="e2e-switch", ip_address="172.31.250.20", secret="e2e-nas-shared-secret"),
+            NasClient(name="e2e-ap", ip_address="172.31.250.30", secret="e2e-nas-shared-secret"),
+            ApiToken(name="e2e", token_hash=hashlib.sha256(API_TOKEN.encode()).hexdigest(), prefix=API_TOKEN[:12],
+                     role=AdminRole.OPERATOR, created_by="e2e"),
+            User(username="dave", password_hash=hash_password_sync("dave-password-1"), group_id=staff.id),
             User(username="alice", password_hash=hash_password_sync('pa"ss\\wörd'), group_id=staff.id),
             User(username="bob", password_hash=hash_password_sync("bob-password"), enabled=False,
                  group_id=staff.id),
