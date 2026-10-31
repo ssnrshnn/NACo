@@ -5,7 +5,7 @@
 #   ghcr.io/<owner>/naco-freeradius:X.Y.Z, :X.Y, :latest
 #
 # Verify an image:
-#   cosign verify ghcr.io/<owner>/naco:X.Y.Z \
+#   cosign verify ghcr.io/<owner>/naco:X.Y.Z \   (cosign 3+)
 #     --certificate-identity-regexp '^https://github.com/<owner>/NACo/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 name: Release
