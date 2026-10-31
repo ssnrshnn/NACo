@@ -1,4 +1,4 @@
-# End-to-end test stack: real FreeRADIUS + NACo + a test NAS/supplicant.
+# End-to-end test stack: real FreeRADIUS + NACo + test NASes and supplicants.
 # Driven by tests/e2e/test_e2e.py (pytest -m e2e).
 name: naco-e2e
 
@@ -27,6 +27,12 @@ services:
     build: { context: ., dockerfile: client.Dockerfile }
     volumes: ["./.certs/client:/certs:ro"]
     networks: { e2e: { ipv4_address: 172.31.250.20 } }
+
+  ap:  # a real authenticator: hostapd, with its Disconnect server
+    build: { context: ., dockerfile: ap.Dockerfile }
+    cap_add: [NET_ADMIN]  # the veth pair inside the container
+    volumes: ["./hostapd.conf:/etc/hostapd.conf:ro", "./.certs/client:/certs:ro"]
+    networks: { e2e: { ipv4_address: 172.31.250.30 } }
 
   stranger:  # an address NACo does not know
     build: { context: ., dockerfile: client.Dockerfile }

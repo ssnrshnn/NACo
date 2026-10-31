@@ -1,6 +1,6 @@
 """End-to-end: real FreeRADIUS 3.2 in front of NACo, real RADIUS/EAP clients.
 
-Run with:  pytest -m e2e tests/e2e   (needs Docker; builds three images)
+Run with:  pytest -m e2e tests/e2e   (needs Docker; builds four images)
 """
 from __future__ import annotations
 
@@ -307,6 +307,81 @@ def test_accounting_lifecycle():
     assert session == {"sid": "E2E-1", "username": "alice", "vlan": 10, "framed_ip": "192.0.2.10"}
     radclient({**base, "Acct-Status-Type": "Stop"}, kind="acct", port=1813)
     assert not [s for s in state()["sessions"] if s["sid"] == "E2E-1"]
+
+
+# ── a real NAS: hostapd ────────────────────────────────────────────────────
+
+API_TOKEN = "naco_e2e-operator-token-0123456789abcdef"  # seeded with the operator role
+_API = '''
+import sys, urllib.request
+method, path, body, token = sys.argv[1:5]
+request = urllib.request.Request("http://127.0.0.1:8080/api/v1" + path, method=method, data=body.encode() or None,
+                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+print(urllib.request.urlopen(request, timeout=30).read().decode() or "null")
+'''
+
+
+def api(method: str, path: str, body: dict | None = None):
+    """NACo's REST API, as an operator would call it."""
+    out = compose("exec", "-T", "naco", "python", "-c", _API, method, path,
+                  "" if body is None else json.dumps(body), API_TOKEN)
+    return json.loads(out.strip().splitlines()[-1])
+
+
+def ap_log() -> str:
+    return compose("logs", "--no-log-prefix", "ap", check=False)
+
+
+def wait_for(what: str, check, timeout: float = 30):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if found := check():
+            return found
+        time.sleep(0.5)
+    raise AssertionError(f"timed out waiting for {what}:\n{ap_log()[-3000:]}")
+
+
+def supplicant(cmd: str) -> str:
+    return in_client(f"wpa_cli -i sta0 {cmd}", service="ap").stdout
+
+
+def test_hostapd_accepts_nacos_disconnects():
+    """hostapd's Disconnect server is strict (Event-Timestamp and
+    Message-Authenticator required, unknown attributes refused): it ACKs what
+    NACo sends for the Standard device type, by hand and after a change."""
+    conf = "ctrl_interface=/run/wpa_supplicant\nap_scan=0\n" + ttls("dave", "dave-password-1").replace(
+        "key_mgmt=WPA-EAP", "key_mgmt=IEEE8021X\n  eapol_flags=0")
+    in_client("cat > /tmp/sta.conf && wpa_supplicant -B -D wired -i sta0 -c /tmp/sta.conf", conf, service="ap")
+
+    def session():
+        found = api("GET", "/sessions?nas_ip=172.31.250.30")["items"]
+        return found[0] if found and found[0]["username"] == "dave" else None
+
+    def disconnects():
+        return ap_log().count("AP-STA-DISCONNECTED 02:00:00:00:00:30")
+
+    try:
+        wait_for("802.1X", lambda: "suppPortStatus=Authorized" in supplicant("status"))
+        # The NAS learned the verified inner identity, not the anonymous outer one.
+        assert "updated with User-Name from Access-Accept 'dave'" in ap_log()
+        first = wait_for("the accounting session", session)
+        assert (first["vlan"], first["mac_address"]) == (10, "02:00:00:00:00:30")
+
+        assert api("POST", f"/sessions/{first['id']}/disconnect") == \
+            {"requested": 1, "acked": 1, "failed": 0, "skipped": 0}
+        wait_for("the disconnect", lambda: disconnects() == 1)
+        wait_for("the accounting stop", lambda: session() is None)
+
+        supplicant("reauthenticate")
+        wait_for("a new session", session)
+        (dave,) = api("GET", "/users?q=dave")["items"]
+        api("PATCH", f"/users/{dave['id']}", {"enabled": False})  # NACo disconnects by itself
+        wait_for("the disconnect after the change", lambda: disconnects() == 2)
+        supplicant("reauthenticate")
+        wait_for("the reject", lambda: "suppPortStatus=Unauthorized" in supplicant("status"))
+        assert state()["logs"][0]["reason"] == "user disabled"
+    finally:
+        supplicant("terminate")
 
 
 # ── fail closed (keep last: stops NACo) ────────────────────────────────────
