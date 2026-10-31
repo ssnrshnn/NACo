@@ -89,7 +89,8 @@ NACO_RADIUS_IMAGE=ghcr.io/ssnrshnn/naco-freeradius:3.1.1 ./quickstart.sh
 
 `quickstart.sh` writes both into `.env` and pulls instead of building; on an
 existing installation, change them in `.env` and run it again. Verify a
-signature with:
+signature with cosign 3 or later (older versions do not read the signature
+format and report *no signatures found*):
 
 ```bash
 cosign verify ghcr.io/ssnrshnn/naco:3.1.1 \
