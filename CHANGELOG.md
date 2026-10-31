@@ -2,7 +2,7 @@
 
 All notable changes to NACo. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 3.1.1 — 2026-10-31
 
 Three devices were run against NACo in a lab — MikroTik RouterOS 7.25,
 Extreme Switch Engine 33.6.1 and hostapd 2.11 — and their pages now say
@@ -21,6 +21,12 @@ what was seen there.
 - For EAP-TTLS and PEAP, the Access-Accept carries the name NACo verified
   inside the tunnel as User-Name (RFC 2865 §5.1), so devices that honour it
   show and account the real user instead of `anonymous`.
+
+### Tests
+
+- The end-to-end suite now includes a real NAS: hostapd, whose strict
+  Disconnect server must ACK NACo's requests — by hand through the REST API
+  and after a user is disabled.
 
 ### Documentation
 
