@@ -106,10 +106,10 @@ jobs:
           ./quickstart.sh --yes
           sha256sum -c before
       - name: Scan naco image
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        uses: anchore/scan-action@11983a512817154c80a9db660c1a184be7513ed6 # v7.4.3
         with: { image: "naco:local", fail-build: true, severity-cutoff: high, only-fixed: true, output-format: table }
       - name: Scan naco-freeradius image
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        uses: anchore/scan-action@11983a512817154c80a9db660c1a184be7513ed6 # v7.4.3
         with: { image: "naco-freeradius:local", fail-build: true, severity-cutoff: high, only-fixed: true, output-format: table }
       - name: Container logs
         if: failure()
